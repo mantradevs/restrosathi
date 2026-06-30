@@ -194,22 +194,22 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
         setSelectedTable((prev: any) => prev ? { ...prev, status: 'occupied' } : null);
       }
 
-      // Check if an active order (pending status) already exists in this session
+      // Check if an active order (pending or confirmed) already exists in this session
       let order = activeOrder;
       
-      // If there's no active order, or the active order is not pending (e.g. confirmed/completed),
-      // we check the DB for any pending order, or we create a new one.
-      if (!order || order.status !== 'pending') {
-        const { data: pendingOrders } = await supabase
+      // Reuse the existing active order (pending or confirmed) in this session,
+      // and only create a new order if there are none.
+      if (!order || (order.status !== 'pending' && order.status !== 'confirmed')) {
+        const { data: activeOrders } = await supabase
           .from('orders')
           .select('*')
           .eq('session_id', session.id)
-          .eq('status', 'pending')
+          .in('status', ['pending', 'confirmed'])
           .order('created_at', { ascending: false })
           .limit(1);
 
-        if (pendingOrders && pendingOrders.length > 0) {
-          order = pendingOrders[0];
+        if (activeOrders && activeOrders.length > 0) {
+          order = activeOrders[0];
           setActiveOrder(order);
           setOrderNotes(order.notes || '');
 
@@ -300,6 +300,48 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
       }
       return { ...prev, [itemId]: newQty };
     });
+  };
+
+  const handleReviewOrderWithSelected = () => {
+    if (!activeOrder) {
+      setCurrentStep(3);
+      return;
+    }
+
+    const itemsToAdd = Object.entries(selectedItemsMap).map(([itemId, qty]) => {
+      const menuItem = menuItems.find(m => m.id === itemId);
+      return { menuItem, quantity: qty };
+    }).filter(x => x.menuItem !== undefined);
+
+    if (itemsToAdd.length > 0) {
+      setCart(prev => {
+        let nextCart = [...prev];
+        itemsToAdd.forEach(({ menuItem, quantity }) => {
+          const existingIdx = nextCart.findIndex(item => item.menu_item_id === menuItem.id);
+          if (existingIdx > -1) {
+            nextCart[existingIdx] = {
+              ...nextCart[existingIdx],
+              quantity: nextCart[existingIdx].quantity + quantity
+            };
+          } else {
+            nextCart.push({
+              id: `temp-${Date.now()}-${menuItem.id}`,
+              order_id: activeOrder.id,
+              menu_item_id: menuItem.id,
+              item_name: menuItem.name,
+              price_at_order: menuItem.price || 0,
+              quantity: quantity,
+              notes: ''
+            });
+          }
+        });
+        return nextCart;
+      });
+      setSelectedItemsMap({});
+      showToast(`Added ${itemsToAdd.length} item(s) to order list`);
+    }
+
+    setCurrentStep(3);
   };
 
   const handleAddSelectedToCart = () => {
@@ -587,7 +629,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
             className="glow-hover"
           >
             <Plus size={16} />
-            {hasPendingOrder ? 'Modify Draft Order' : activeSession ? 'Start Additional Order' : 'Start New Order'}
+            {hasPendingOrder ? 'Modify Draft Order' : activeSession ? 'Add Items to Order' : 'Start New Order'}
           </button>
         </div>
       </div>
@@ -653,7 +695,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
           )}
 
           {currentStep === 2 && selectedTable && (
-            <div className="glass" style={{ ...styles.panel, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px' }}>
+            <div className="glass" style={{ ...styles.panel, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px', paddingBottom: '80px' }}>
               <div style={styles.menuHeader}>
                 <div>
                   <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
@@ -827,16 +869,16 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                     </div>
                     <div style={styles.mobileBottomActions}>
                       <button 
-                        onClick={() => setSelectedItemsMap({})} 
-                        style={styles.backBtn}
-                      >
-                        Clear
-                      </button>
-                      <button 
                         onClick={handleAddSelectedToCart}
-                        style={{ ...styles.nextBtn, backgroundColor: 'var(--primary)', color: 'var(--bg-main)' }}
+                        style={{ ...styles.backBtn, backgroundColor: 'rgba(245, 158, 11, 0.1)', border: '1px solid var(--primary)', color: 'var(--primary)', padding: '10px 12px', fontSize: '12px' }}
                       >
                         Add Selected ({Object.keys(selectedItemsMap).length})
+                      </button>
+                      <button 
+                        onClick={handleReviewOrderWithSelected}
+                        style={{ ...styles.nextBtn, padding: '10px 12px', fontSize: '12px' }}
+                      >
+                        Review Order
                       </button>
                     </div>
                   </>
@@ -1051,7 +1093,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
               </div>
             ) : (
               selectedTable && (
-                <div className="glass" style={{ ...styles.panel, flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '24px' }}>
+                <div className="glass" style={{ ...styles.panel, flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '24px', height: '100%', minHeight: 0 }}>
                   <div style={styles.menuHeader}>
                     <div>
                       <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
