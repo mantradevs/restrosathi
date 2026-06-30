@@ -679,13 +679,45 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       }
 
       // 3. Recalculate and update the original active order total
-      const newActiveTotal = selectedOrder.total_amount - splitTotal;
+      const remainingItems = selectedOrderItems.map(item => {
+        const qtyToPay = Math.min(item.quantity, splitSelectedItems[item.id] || 0);
+        return {
+          ...item,
+          quantity: item.quantity - qtyToPay
+        };
+      }).filter(item => item.quantity > 0);
+
+      const newSubtotal = remainingItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0);
+
+      let newDiscountAmt = 0;
+      let newSerializedNotes = selectedOrder.notes || '';
+      
+      // Parse and recalculate the active discount for remaining items
+      if (selectedOrder.notes) {
+        try {
+          const trimmed = selectedOrder.notes.trim();
+          if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+            const parsed = JSON.parse(trimmed);
+            const dType = parsed.discount_type || 'none';
+            const dVal = Number(parsed.discount_value) || 0;
+            
+            if (dType === 'percentage') {
+              newDiscountAmt = Math.round((newSubtotal * dVal) / 100);
+            } else if (dType === 'amount') {
+              newDiscountAmt = Math.min(newSubtotal, dVal);
+            }
+            newSerializedNotes = JSON.stringify({
+              ...parsed,
+              discount_amount: newDiscountAmt
+            });
+          }
+        } catch (e) {}
+      }
+
+      const newActiveTotal = Math.max(0, newSubtotal - newDiscountAmt);
       
       // If no items remain in the original active order, we complete it!
-      const remainingItemsCount = selectedOrderItems.reduce((count, item) => {
-        const qtyToPay = Math.min(item.quantity, splitSelectedItems[item.id] || 0);
-        return count + (item.quantity - qtyToPay);
-      }, 0);
+      const remainingItemsCount = remainingItems.reduce((count, item) => count + item.quantity, 0);
 
       if (remainingItemsCount <= 0) {
         // Complete the original active order
@@ -715,17 +747,20 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         }
         setSelectedOrder(null);
       } else {
-        // Update original order with remaining amount
+        // Update original order with remaining amount and discount notes
         const { error: updErr } = await supabase
           .from('orders')
-          .update({ total_amount: newActiveTotal })
+          .update({ 
+            total_amount: newActiveTotal,
+            notes: newSerializedNotes
+          })
           .eq('id', selectedOrder.id);
         if (updErr) throw updErr;
 
         showToast(`Processed split payment of Rs. ${splitTotal}. Remaining items stay on the table.`);
         
         // Reload current order details
-        await handleViewOrder({ ...selectedOrder, total_amount: newActiveTotal });
+        await handleViewOrder({ ...selectedOrder, total_amount: newActiveTotal, notes: newSerializedNotes });
       }
 
       fetchData();
