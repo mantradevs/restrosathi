@@ -33,12 +33,24 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
   const [sessionOrders, setSessionOrders] = useState<any[]>([]); // all orders in session
   const [posRightTab, setPosRightTab] = useState<'cart' | 'history'>('cart');
 
+  // Ordering Workflow & Mobile Stepper States
+  const [isMobile, setIsMobile] = useState(false);
+  const [isOrdering, setIsOrdering] = useState(false);
+  const [currentStep, setCurrentStep] = useState<number>(1); // 1: Select Table, 2: Choose Items, 3: Review & Confirm
+  const [selectedItemsMap, setSelectedItemsMap] = useState<Record<string, number>>({});
+
   const supabase = getSupabaseClient();
 
   useEffect(() => {
     if (supabase) {
       loadData();
     }
+    const handleResize = () => {
+      setIsMobile(window.innerWidth <= 768);
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   const showToast = (message: string, isSuccess = true) => {
@@ -96,6 +108,8 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
     setOrderNotes('');
     setSessionOrders([]);
     setPosRightTab('cart');
+    setIsOrdering(false);
+    setCurrentStep(1);
 
     setLoading(true);
     try {
@@ -154,7 +168,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
     }
   };
 
-  const handleStartOrder = async () => {
+  const handleBeginOrdering = async () => {
     if (!supabase || !selectedTable) return;
     
     setLoading(true);
@@ -177,192 +191,160 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
         if (sErr) throw sErr;
         session = sessionData;
         setActiveSession(session);
-        setSelectedTable({ ...selectedTable, status: 'occupied' });
+        setSelectedTable((prev: any) => prev ? { ...prev, status: 'occupied' } : null);
       }
 
-      // Check if an active order already exists in this session
-      const { data: existingOrders } = await supabase
-        .from('orders')
-        .select('*')
-        .eq('session_id', session.id)
-        .in('status', ['pending', 'confirmed'])
-        .limit(1);
-
-      if (existingOrders && existingOrders.length > 0) {
-        showToast('Active order already exists for this session.');
-        handleTableSelect(selectedTable);
-        return;
-      }
-
-      // Create a new order in the session
-      const { data: orderData, error: orderErr } = await supabase
-        .from('orders')
-        .insert({
-          table_id: selectedTable.id,
-          session_id: session.id,
-          status: 'pending',
-          payment_status: 'unpaid',
-          total_amount: 0,
-          created_by: user.name,
-          notes: ''
-        })
-        .select()
-        .single();
-      if (orderErr) throw orderErr;
-
-      setActiveOrder(orderData);
-      setCart([]);
-      setConfirmedItems([]);
-      setOrderNotes('');
-      setPosRightTab('cart');
-      loadData();
+      // Check if an active order (pending status) already exists in this session
+      let order = activeOrder;
       
-      // Refresh session orders
+      // If there's no active order, or the active order is not pending (e.g. confirmed/completed),
+      // we check the DB for any pending order, or we create a new one.
+      if (!order || order.status !== 'pending') {
+        const { data: pendingOrders } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('session_id', session.id)
+          .eq('status', 'pending')
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (pendingOrders && pendingOrders.length > 0) {
+          order = pendingOrders[0];
+          setActiveOrder(order);
+          setOrderNotes(order.notes || '');
+
+          const { data: itemsData } = await supabase
+            .from('order_items')
+            .select('*')
+            .eq('order_id', order.id);
+
+          const dbItems = itemsData || [];
+          const pending = dbItems.filter((it: any) => (it.status || 'confirmed') === 'pending');
+          const confirmed = dbItems.filter((it: any) => (it.status || 'confirmed') === 'confirmed');
+
+          setCart(pending);
+          setConfirmedItems(confirmed);
+        } else {
+          // Create new pending order
+          const { data: orderData, error: orderErr } = await supabase
+            .from('orders')
+            .insert({
+              table_id: selectedTable.id,
+              session_id: session.id,
+              status: 'pending',
+              payment_status: 'unpaid',
+              total_amount: 0,
+              created_by: user.name,
+              notes: ''
+            })
+            .select()
+            .single();
+          if (orderErr) throw orderErr;
+          order = orderData;
+          setActiveOrder(order);
+          setCart([]);
+          setConfirmedItems([]);
+          setOrderNotes('');
+        }
+      }
+
+      setIsOrdering(true);
+      if (window.innerWidth <= 768) {
+        setCurrentStep(2);
+      }
+      
+      // Refresh session orders list
       const { data: allOrders } = await supabase
         .from('orders')
         .select('*, order_items(*)')
         .eq('session_id', session.id)
         .order('created_at', { ascending: false });
       setSessionOrders(allOrders || []);
-
-      showToast('New order started for ' + selectedTable.table_number);
+      
     } catch (err: any) {
-      showToast(err.message || 'Error initializing order', false);
+      showToast(err.message || 'Error starting order', false);
     } finally {
       setLoading(false);
     }
   };
 
-  // Cart operations (Only available if order status is pending!)
-  const handleAddToCart = async (menuItem: any) => {
-    if (!supabase || !selectedTable) return;
+  const handleCancelOrdering = () => {
+    setIsOrdering(false);
+    setCurrentStep(1);
+    if (selectedTable) {
+      handleTableSelect(selectedTable);
+    }
+  };
 
-    let currentOrder = activeOrder;
-    let currentSession = activeSession;
 
-    // Retrieve/Ensure table session exists
-    if (!currentSession) {
-      setLoading(true);
-      try {
-        const { error: tErr } = await supabase
-          .from('restaurant_tables')
-          .update({ status: 'occupied' })
-          .eq('id', selectedTable.id);
-        if (tErr) throw tErr;
 
-        const { data: sessionData, error: sErr } = await supabase
-          .from('table_sessions')
-          .insert({ table_id: selectedTable.id, status: 'active' })
-          .select()
-          .single();
-        if (sErr) throw sErr;
-        currentSession = sessionData;
-        setActiveSession(currentSession);
-        setSelectedTable({ ...selectedTable, status: 'occupied' });
-      } catch (err: any) {
-        showToast(err.message || 'Error starting session', false);
-        setLoading(false);
-        return;
+  // Selection operations before adding to the cart
+  const toggleItemSelection = (menuItem: any) => {
+    setSelectedItemsMap(prev => {
+      const next = { ...prev };
+      if (next[menuItem.id] !== undefined) {
+        delete next[menuItem.id];
+      } else {
+        next[menuItem.id] = 1;
       }
-      setLoading(false);
+      return next;
+    });
+  };
+
+  const updateSelectionQty = (itemId: string, newQty: number) => {
+    setSelectedItemsMap(prev => {
+      if (newQty <= 0) {
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      }
+      return { ...prev, [itemId]: newQty };
+    });
+  };
+
+  const handleAddSelectedToCart = () => {
+    if (!activeOrder) {
+      showToast('No active order. Please select a table and start ordering.', false);
+      return;
     }
 
-    // Double-check if an active order already exists in this session
-    if (!currentOrder && currentSession) {
-      setLoading(true);
-      try {
-        const { data: existingOrders } = await supabase
-          .from('orders')
-          .select('*')
-          .eq('session_id', currentSession.id)
-          .in('status', ['pending', 'confirmed'])
-          .order('created_at', { ascending: false })
-          .limit(1);
+    const itemsToAdd = Object.entries(selectedItemsMap).map(([itemId, qty]) => {
+      const menuItem = menuItems.find(m => m.id === itemId);
+      return { menuItem, quantity: qty };
+    }).filter(x => x.menuItem !== undefined);
 
-        if (existingOrders && existingOrders.length > 0) {
-          currentOrder = existingOrders[0];
-          setActiveOrder(currentOrder);
-
-          // Load items
-          const { data: itemsData } = await supabase
-            .from('order_items')
-            .select('*')
-            .eq('order_id', currentOrder.id);
-          const dbItems = itemsData || [];
-          const pending = dbItems.filter((it: any) => (it.status || 'confirmed') === 'pending');
-          const confirmed = dbItems.filter((it: any) => (it.status || 'confirmed') === 'confirmed');
-          setCart(pending);
-          setConfirmedItems(confirmed);
-        }
-      } catch (err: any) {
-        showToast(err.message || 'Error checking existing order', false);
-        setLoading(false);
-        return;
-      }
-      setLoading(false);
+    if (itemsToAdd.length === 0) {
+      showToast('Please select at least one item first.', false);
+      return;
     }
 
-    // If still no active order, let's create one!
-    if (!currentOrder && currentSession) {
-      setLoading(true);
-      try {
-        const { data: orderData, error: orderErr } = await supabase
-          .from('orders')
-          .insert({
-            table_id: selectedTable.id,
-            session_id: currentSession.id,
-            status: 'pending',
-            payment_status: 'unpaid',
-            total_amount: 0,
-            created_by: user.name,
+    setCart(prev => {
+      let nextCart = [...prev];
+      itemsToAdd.forEach(({ menuItem, quantity }) => {
+        const existingIdx = nextCart.findIndex(item => item.menu_item_id === menuItem.id);
+        if (existingIdx > -1) {
+          nextCart[existingIdx] = {
+            ...nextCart[existingIdx],
+            quantity: nextCart[existingIdx].quantity + quantity
+          };
+        } else {
+          nextCart.push({
+            id: `temp-${Date.now()}-${menuItem.id}`,
+            order_id: activeOrder.id,
+            menu_item_id: menuItem.id,
+            item_name: menuItem.name,
+            price_at_order: menuItem.price || 0,
+            quantity: quantity,
             notes: ''
-          })
-          .select()
-          .single();
-        if (orderErr) throw orderErr;
-
-        currentOrder = orderData;
-        setActiveOrder(currentOrder);
-        setOrderNotes('');
-        setPosRightTab('cart');
-        loadData();
-
-        // Refresh session orders list
-        const { data: allOrders } = await supabase
-          .from('orders')
-          .select('*, order_items(*)')
-          .eq('session_id', currentSession.id)
-          .order('created_at', { ascending: false });
-        setSessionOrders(allOrders || []);
-      } catch (err: any) {
-        showToast(err.message || 'Error starting order', false);
-        setLoading(false);
-        return;
-      }
-      setLoading(false);
-    }
-
-    const existingCartItem = cart.find(item => item.menu_item_id === menuItem.id);
-    if (existingCartItem) {
-      setCart(cart.map(item => 
-        item.menu_item_id === menuItem.id 
-          ? { ...item, quantity: item.quantity + 1 } 
-          : item
-      ));
-    } else {
-      setCart([
-        ...cart,
-        {
-          id: `temp-${Date.now()}`,
-          order_id: currentOrder!.id,
-          menu_item_id: menuItem.id,
-          item_name: menuItem.name,
-          price_at_order: menuItem.price || 0,
-          quantity: 1,
-          notes: ''
+          });
         }
-      ]);
-    }
+      });
+      return nextCart;
+    });
+
+    // Reset selection map
+    setSelectedItemsMap({});
+    showToast(`Added ${itemsToAdd.length} item(s) to order list`);
   };
 
   const handleUpdateQty = (itemId: string, newQty: number) => {
@@ -462,9 +444,158 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
     return matchesCategory && matchesSearch;
   });
 
+  const renderStepperHeader = () => {
+    if (!isMobile || !isOrdering) return null;
+    return (
+      <div style={styles.mobileStepperHeader}>
+        <div style={styles.mobileStepperStep}>
+          <div style={{
+            ...styles.stepNumber,
+            backgroundColor: currentStep >= 1 ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+            color: currentStep >= 1 ? '#fff' : 'var(--text-muted)'
+          }}>1</div>
+          <span style={{ fontSize: '12px', fontWeight: currentStep === 1 ? '600' : '400', color: currentStep === 1 ? 'var(--primary)' : 'var(--text-main)' }}>Table</span>
+        </div>
+        <div style={{ flex: 1, height: '2px', backgroundColor: currentStep >= 2 ? 'var(--primary)' : 'var(--border-color)', margin: '0 8px', alignSelf: 'center' }} />
+        <div style={styles.mobileStepperStep}>
+          <div style={{
+            ...styles.stepNumber,
+            backgroundColor: currentStep >= 2 ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+            color: currentStep >= 2 ? '#fff' : 'var(--text-muted)'
+          }}>2</div>
+          <span style={{ fontSize: '12px', fontWeight: currentStep === 2 ? '600' : '400', color: currentStep === 2 ? 'var(--primary)' : 'var(--text-main)' }}>Menu</span>
+        </div>
+        <div style={{ flex: 1, height: '2px', backgroundColor: currentStep >= 3 ? 'var(--primary)' : 'var(--border-color)', margin: '0 8px', alignSelf: 'center' }} />
+        <div style={styles.mobileStepperStep}>
+          <div style={{
+            ...styles.stepNumber,
+            backgroundColor: currentStep >= 3 ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+            color: currentStep >= 3 ? '#fff' : 'var(--text-muted)'
+          }}>3</div>
+          <span style={{ fontSize: '12px', fontWeight: currentStep === 3 ? '600' : '400', color: currentStep === 3 ? 'var(--primary)' : 'var(--text-main)' }}>Confirm</span>
+        </div>
+      </div>
+    );
+  };
+
+  const renderTableDetails = () => {
+    if (!selectedTable) return null;
+    
+    const totalBilled = sessionOrders
+      .filter(o => o.status !== 'cancelled')
+      .reduce((sum, o) => sum + (o.total_amount || 0), 0);
+
+    const hasPendingOrder = sessionOrders.some(o => o.status === 'pending');
+
+    return (
+      <div style={styles.tableDetailsPanel} className="glass">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
+          <div>
+            <h2 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', color: 'var(--text-main)' }}>Table {selectedTable.table_number}</h2>
+            <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Capacity: {selectedTable.seating_capacity} seats</span>
+          </div>
+          <span style={{
+            fontSize: '11px',
+            fontWeight: '700',
+            padding: '4px 10px',
+            borderRadius: 'var(--radius-full)',
+            backgroundColor: selectedTable.status === 'occupied' ? 'rgba(217, 119, 6, 0.12)' :
+                            selectedTable.status === 'reserved' ? 'rgba(79, 70, 229, 0.12)' : 'rgba(16, 185, 129, 0.12)',
+            color: selectedTable.status === 'occupied' ? 'var(--primary)' :
+                   selectedTable.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
+          }}>
+            {selectedTable.status.toUpperCase()}
+          </span>
+        </div>
+
+        {activeSession ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Session Status:</span>
+              <strong style={{ color: 'var(--success)' }}>Active Session</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Total Orders in Session:</span>
+              <strong style={{ color: 'var(--text-main)' }}>{sessionOrders.length}</strong>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
+              <span style={{ color: 'var(--text-muted)' }}>Current Bill Total:</span>
+              <strong style={{ color: 'var(--primary)' }}>Rs. {totalBilled}</strong>
+            </div>
+
+            <div style={{ marginTop: '8px' }}>
+              <h4 style={{ fontSize: '13px', fontWeight: '600', marginBottom: '8px', color: 'var(--text-muted)' }}>Session Orders History</h4>
+              {sessionOrders.length === 0 ? (
+                <div style={{ padding: '12px', fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center', border: '1px dashed var(--border-color)', borderRadius: 'var(--radius-sm)' }}>
+                  No orders placed in this session yet.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '160px', overflowY: 'auto' }}>
+                  {sessionOrders.map((o) => (
+                    <div key={o.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', backgroundColor: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-color)', fontSize: '12px' }}>
+                      <div>
+                        <span style={{ fontWeight: '600', color: 'var(--text-main)' }}>#{o.id.slice(0, 8)}</span>
+                        <span style={{ marginLeft: '8px', color: 'var(--text-muted)', fontSize: '10px' }}>
+                          {new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontWeight: '600', color: 'var(--primary)' }}>Rs. {o.total_amount}</span>
+                        <span style={{
+                          fontSize: '9px',
+                          fontWeight: '700',
+                          padding: '2px 6px',
+                          borderRadius: 'var(--radius-full)',
+                          backgroundColor: o.status === 'completed' ? 'rgba(16, 185, 129, 0.12)' :
+                                          o.status === 'confirmed' ? 'rgba(99, 102, 241, 0.12)' :
+                                          o.status === 'pending' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                          color: o.status === 'completed' ? 'var(--success)' :
+                                 o.status === 'confirmed' ? 'var(--secondary)' :
+                                 o.status === 'pending' ? 'var(--primary)' : 'var(--danger)'
+                        }}>{o.status.toUpperCase()}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <p style={{ fontSize: '13px', color: 'var(--text-muted)', textAlign: 'center', padding: '16px 0' }}>
+            This table is currently available. Start ordering to open a session.
+          </p>
+        )}
+
+        <div style={{ marginTop: '12px' }}>
+          <button
+            onClick={handleBeginOrdering}
+            style={{
+              width: '100%',
+              padding: '12px',
+              backgroundColor: 'var(--primary)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px'
+            }}
+            className="glow-hover"
+          >
+            <Plus size={16} />
+            {hasPendingOrder ? 'Modify Draft Order' : activeSession ? 'Start Additional Order' : 'Start New Order'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="responsive-pos-container">
-      {/* Toast Alert */}
+    <div className="responsive-pos-container" style={{ paddingBottom: (isMobile && isOrdering && currentStep === 2) ? '80px' : 0 }}>
       {successMessage && (
         <div style={styles.toast} className="animate-fade-in">
           <Check size={18} style={{ marginRight: 8 }} />
@@ -479,47 +610,56 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
         </div>
       )}
 
-      <div className="responsive-pos-split">
-        {/* LEFT COLUMN: Table Grid & Menu Selector */}
-        <div style={styles.leftColumn}>
-          {/* Tables Selection Grid */}
-          <div style={styles.panel} className="glass">
-            <h2 style={styles.sectionHeading}>Dining Tables</h2>
-            <div style={styles.tablesGrid}>
-              {tables.map((t) => (
-                <button
-                  key={t.id}
-                  onClick={() => handleTableSelect(t)}
-                  style={{
-                    ...styles.tableBtn,
-                    borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
-                    backgroundColor: t.status === 'occupied' 
-                      ? 'rgba(217, 119, 6, 0.08)' 
-                      : t.status === 'reserved' 
-                        ? 'rgba(79, 70, 229, 0.08)'
-                        : 'rgba(0, 0, 0, 0.02)',
-                  }}
-                >
-                  <span style={styles.tableNum}>{t.table_number}</span>
-                  <span style={{
-                    ...styles.tableStatusText,
-                    color: t.status === 'occupied' ? 'var(--primary)' : 
-                           t.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
-                  }}>
-                    {t.status.toUpperCase()}
-                  </span>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Cap: {t.seating_capacity}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+      {renderStepperHeader()}
 
-          {/* Menu Items Browser */}
-          {selectedTable && (
-            <div className="glass" style={{ ...styles.panel, flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '24px' }}>
+      {isMobile ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', width: '100%' }}>
+          {currentStep === 1 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div style={styles.panel} className="glass">
+                <h2 style={styles.sectionHeading}>Dining Tables</h2>
+                <div style={styles.tablesGrid}>
+                  {tables.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => handleTableSelect(t)}
+                      style={{
+                        ...styles.tableBtn,
+                        borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
+                        backgroundColor: t.status === 'occupied' 
+                          ? 'rgba(217, 119, 6, 0.08)' 
+                          : t.status === 'reserved' 
+                            ? 'rgba(79, 70, 229, 0.08)'
+                            : 'rgba(0, 0, 0, 0.02)',
+                        boxShadow: selectedTable?.id === t.id ? 'var(--shadow-glow)' : 'none',
+                      }}
+                    >
+                      <span style={styles.tableNum}>{t.table_number}</span>
+                      <span style={{
+                        ...styles.tableStatusText,
+                        color: t.status === 'occupied' ? 'var(--primary)' : 
+                               t.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
+                      }}>
+                        {t.status.toUpperCase()}
+                      </span>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Cap: {t.seating_capacity}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {selectedTable && renderTableDetails()}
+            </div>
+          )}
+
+          {currentStep === 2 && selectedTable && (
+            <div className="glass" style={{ ...styles.panel, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px' }}>
               <div style={styles.menuHeader}>
-                <h2 style={styles.sectionHeading}>Browse Restaurant Menu</h2>
-                <div style={styles.searchBar}>
+                <div>
+                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
+                  <h2 style={{ ...styles.sectionHeading, marginBottom: 0 }}>Browse Menu</h2>
+                </div>
+                <div style={{ ...styles.searchBar, width: '100%', maxWidth: '200px' }}>
                   <Search size={16} color="var(--text-muted)" style={{ marginRight: 8 }} />
                   <input
                     type="text"
@@ -531,7 +671,6 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                 </div>
               </div>
 
-              {/* Categories Tabs */}
               <div style={styles.categoriesContainer}>
                 <button
                   onClick={() => setSelectedCategoryId('all')}
@@ -558,370 +697,722 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                 ))}
               </div>
 
-              {/* Menu items list */}
               <div style={styles.menuGridContainer}>
                 {filteredMenuItems.length === 0 ? (
                   <div style={styles.emptyState}>No items match your search.</div>
                 ) : (
-                  <div style={styles.menuItemsGrid}>
-                    {filteredMenuItems.map((item) => (
-                      <div 
-                        key={item.id} 
-                        onClick={() => handleAddToCart(item)}
-                        style={styles.menuItemCard}
-                        className="glow-hover"
-                      >
-                        {item.image_url ? (
-                          <img src={item.image_url} alt={item.name} style={styles.itemImg} />
-                        ) : (
-                          <div style={styles.itemNoImg}>
-                            <Image size={20} color="var(--text-muted)" />
+                  <div style={{ ...styles.menuItemsGrid, gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
+                    {filteredMenuItems.map((item) => {
+                      const isSelected = selectedItemsMap[item.id] !== undefined;
+                      return (
+                        <div 
+                          key={item.id} 
+                          onClick={() => toggleItemSelection(item)}
+                          style={{
+                            ...styles.menuItemCard,
+                            border: isSelected ? '2px solid var(--primary)' : '1px solid var(--border-color)',
+                            backgroundColor: isSelected ? 'rgba(245, 158, 11, 0.03)' : 'var(--bg-surface)',
+                            position: 'relative',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'space-between',
+                            height: '100%',
+                            cursor: 'pointer'
+                          }}
+                          className="glow-hover"
+                        >
+                          <div>
+                            <div style={{
+                              position: 'absolute',
+                              top: '8px',
+                              right: '8px',
+                              zIndex: 10,
+                              width: '20px',
+                              height: '20px',
+                              borderRadius: '4px',
+                              border: '2px solid ' + (isSelected ? 'var(--primary)' : 'var(--border-color)'),
+                              backgroundColor: isSelected ? 'var(--primary)' : 'rgba(0, 0, 0, 0.3)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              transition: 'var(--transition-fast)'
+                            }}>
+                              {isSelected && <Check size={12} color="#fff" strokeWidth={3} />}
+                            </div>
+
+                            {item.image_url ? (
+                              <img src={item.image_url} alt={item.name} style={styles.itemImg} />
+                            ) : (
+                              <div style={styles.itemNoImg}>
+                                <Image size={20} color="var(--text-muted)" />
+                              </div>
+                            )}
+                            <div style={styles.itemInfo}>
+                              <h4 style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-main)', margin: '0 0 4px 0' }}>{item.name}</h4>
+                              <span style={styles.itemPrice}>Rs. {item.price}</span>
+                            </div>
                           </div>
-                        )}
-                        <div style={styles.itemInfo}>
-                          <h4 style={{ fontSize: '13px', fontWeight: '600' }}>{item.name}</h4>
-                          <span style={styles.itemPrice}>Rs. {item.price}</span>
+
+                          {isSelected && (
+                            <div 
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                padding: '6px 12px',
+                                borderTop: '1px solid var(--border-color)',
+                                backgroundColor: 'var(--bg-surface-elevated)',
+                                gap: '8px',
+                                borderBottomLeftRadius: 'var(--radius-sm)',
+                                borderBottomRightRadius: 'var(--radius-sm)'
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', justifyContent: 'space-between' }}>
+                                <button 
+                                  onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] - 1)}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    width: '20px',
+                                    height: '20px',
+                                    borderRadius: '50%',
+                                    border: '1px solid var(--border-color)',
+                                    backgroundColor: 'var(--bg-surface)',
+                                    color: 'var(--text-main)',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <Minus size={10} />
+                                </button>
+                                <span style={{ fontSize: '12px', fontWeight: '700' }}>
+                                  {selectedItemsMap[item.id]}
+                                </span>
+                                <button 
+                                  onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] + 1)}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    width: '20px',
+                                    height: '20px',
+                                    borderRadius: '50%',
+                                    border: '1px solid var(--border-color)',
+                                    backgroundColor: 'var(--bg-surface)',
+                                    color: 'var(--text-main)',
+                                    cursor: 'pointer'
+                                  }}
+                                >
+                                  <Plus size={10} />
+                                </button>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
+                )}
+              </div>
+
+              <div style={styles.mobileBottomBar}>
+                {Object.keys(selectedItemsMap).length > 0 ? (
+                  <>
+                    <div style={styles.mobileBottomInfo}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Current Selection</span>
+                      <span style={{ fontSize: '14px', fontWeight: '700', color: 'var(--primary)' }}>
+                        {Object.values(selectedItemsMap).reduce((sum, q) => sum + q, 0)} Items Selected
+                      </span>
+                    </div>
+                    <div style={styles.mobileBottomActions}>
+                      <button 
+                        onClick={() => setSelectedItemsMap({})} 
+                        style={styles.backBtn}
+                      >
+                        Clear
+                      </button>
+                      <button 
+                        onClick={handleAddSelectedToCart}
+                        style={{ ...styles.nextBtn, backgroundColor: 'var(--primary)', color: 'var(--bg-main)' }}
+                      >
+                        Add Selected ({Object.keys(selectedItemsMap).length})
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={styles.mobileBottomInfo}>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Active Cart</span>
+                      <span style={{ fontSize: '14px', fontWeight: '700', color: 'var(--primary)' }}>
+                        {cart.reduce((sum, item) => sum + item.quantity, 0)} Items | Rs. {cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}
+                      </span>
+                    </div>
+                    <div style={styles.mobileBottomActions}>
+                      <button onClick={handleCancelOrdering} style={styles.backBtn}>
+                        Cancel
+                      </button>
+                      <button 
+                        onClick={() => setCurrentStep(3)} 
+                        disabled={cart.length === 0}
+                        style={{ ...styles.nextBtn, opacity: cart.length === 0 ? 0.5 : 1 }}
+                      >
+                        Review Order
+                      </button>
+                    </div>
+                  </>
                 )}
               </div>
             </div>
           )}
-        </div>
 
-        {/* RIGHT COLUMN: Active Cart / Order Panel */}
-        <div style={styles.rightColumn}>
-          <div style={{ ...styles.panel, height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }} className="glass">
-            {selectedTable ? (
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                {/* Tabs Selector at the top of Right Column */}
-                <div style={{
-                  display: 'flex',
-                  borderBottom: '1px solid var(--border-color)',
-                  marginBottom: '16px',
-                  flexShrink: 0
-                }}>
-                  <button
-                    onClick={() => setPosRightTab('cart')}
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      backgroundColor: 'transparent',
-                      border: 'none',
-                      borderBottom: posRightTab === 'cart' ? '3px solid var(--primary)' : 'none',
-                      color: posRightTab === 'cart' ? 'var(--primary)' : 'var(--text-muted)',
-                      fontWeight: '600',
-                      fontSize: '14px',
-                      cursor: 'pointer',
-                      transition: 'var(--transition-fast)'
-                    }}
-                  >
-                    Active Cart
-                  </button>
-                  <button
-                    onClick={() => setPosRightTab('history')}
-                    style={{
-                      flex: 1,
-                      padding: '12px',
-                      backgroundColor: 'transparent',
-                      border: 'none',
-                      borderBottom: posRightTab === 'history' ? '3px solid var(--primary)' : 'none',
-                      color: posRightTab === 'history' ? 'var(--primary)' : 'var(--text-muted)',
-                      fontWeight: '600',
-                      fontSize: '14px',
-                      cursor: 'pointer',
-                      transition: 'var(--transition-fast)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      gap: '6px'
-                    }}
-                  >
-                    Session Orders
-                    {sessionOrders.length > 0 && (
-                      <span style={{
-                        backgroundColor: posRightTab === 'history' ? 'var(--primary)' : 'var(--border-color)',
-                        color: posRightTab === 'history' ? '#fff' : 'var(--text-muted)',
-                        fontSize: '10px',
-                        padding: '2px 6px',
-                        borderRadius: '10px',
-                        fontWeight: '700'
-                      }}>
-                        {sessionOrders.length}
-                      </span>
-                    )}
-                  </button>
+          {currentStep === 3 && selectedTable && activeOrder && (
+            <div style={{ ...styles.panel, padding: '16px' }} className="glass">
+              <div style={styles.cartContainer}>
+                <div style={styles.cartHeader}>
+                  <div>
+                    <h2 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', color: 'var(--text-main)' }}>Table {selectedTable.table_number} Order</h2>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Status: {activeOrder.status.toUpperCase()}</span>
+                  </div>
                 </div>
 
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                  {posRightTab === 'cart' ? (
-                    activeOrder ? (
-                      <div style={styles.cartContainer}>
-                        {/* Cart Header */}
-                        <div style={styles.cartHeader}>
-                          <div>
-                            <h2 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)' }}>{selectedTable.table_number} Order</h2>
-                            <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Status: {activeOrder.status.toUpperCase()}</span>
+                <div style={styles.cartItemsList}>
+                  {confirmedItems.length === 0 && cart.length === 0 ? (
+                    <div style={styles.emptyCart}>
+                      <ShoppingCart size={32} color="var(--border-color)" style={{ marginBottom: 8 }} />
+                      <p>Your order card is empty.</p>
+                      <p style={{ fontSize: '12px' }}>Go back to menu to add.</p>
+                    </div>
+                  ) : (
+                    <>
+                      {confirmedItems.map((item) => (
+                        <div key={item.id} style={{ ...styles.cartItemRow, opacity: 0.85, backgroundColor: 'rgba(16, 185, 129, 0.02)', borderLeft: '3px solid var(--success)' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={styles.cartItemName}>
+                              {item.item_name}
+                              <span style={{
+                                marginLeft: 8,
+                                fontSize: '9px',
+                                backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                                color: 'var(--success)',
+                                padding: '2px 6px',
+                                borderRadius: 'var(--radius-full)',
+                                fontWeight: '700'
+                              }}>COOKING</span>
+                            </div>
+                            <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
+                            {item.notes && <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>* {item.notes}</div>}
+                          </div>
+                          <div style={styles.cartItemQuantityArea}>
+                            <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginRight: '12px' }}>Qty: {item.quantity}</span>
+                            <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
                           </div>
                         </div>
+                      ))}
 
-                        {/* Items List */}
-                        <div style={styles.cartItemsList}>
-                          {confirmedItems.length === 0 && cart.length === 0 ? (
-                            <div style={styles.emptyCart}>
-                              <ShoppingCart size={32} color="var(--border-color)" style={{ marginBottom: 8 }} />
-                              <p>Your order card is empty.</p>
-                              <p style={{ fontSize: '12px' }}>Tap menu items to add.</p>
+                      {cart.map((item) => (
+                        <div key={item.id} style={{ ...styles.cartItemRow, borderLeft: '3px solid var(--primary)', backgroundColor: 'rgba(245, 158, 11, 0.01)' }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={styles.cartItemName}>
+                              {item.item_name}
+                              <span style={{
+                                marginLeft: 8,
+                                fontSize: '9px',
+                                backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                                color: 'var(--primary)',
+                                padding: '2px 6px',
+                                borderRadius: 'var(--radius-full)',
+                                fontWeight: '700'
+                              }}>NEW</span>
                             </div>
-                          ) : (
-                            <>
-                              {/* 1. Confirmed items (Read-Only) */}
-                              {confirmedItems.map((item) => (
-                                <div key={item.id} style={{ ...styles.cartItemRow, opacity: 0.85, backgroundColor: 'rgba(16, 185, 129, 0.02)', borderLeft: '3px solid var(--success)' }}>
-                                  <div style={{ flex: 1 }}>
-                                    <div style={styles.cartItemName}>
-                                      {item.item_name}
-                                      <span style={{
-                                        marginLeft: 8,
-                                        fontSize: '9px',
-                                        backgroundColor: 'rgba(16, 185, 129, 0.12)',
-                                        color: 'var(--success)',
-                                        padding: '2px 6px',
-                                        borderRadius: 'var(--radius-full)',
-                                        fontWeight: '700'
-                                      }}>COOKING</span>
-                                    </div>
-                                    <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
-                                    {item.notes && <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>* {item.notes}</div>}
-                                  </div>
-                                  <div style={styles.cartItemQuantityArea}>
-                                    <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginRight: '12px' }}>Qty: {item.quantity}</span>
-                                    <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
-                                  </div>
-                                </div>
-                              ))}
-
-                              {/* 2. New pending/draft items (Editable) */}
-                              {cart.map((item) => (
-                                <div key={item.id} style={{ ...styles.cartItemRow, borderLeft: '3px solid var(--primary)', backgroundColor: 'rgba(245, 158, 11, 0.01)' }}>
-                                  <div style={{ flex: 1 }}>
-                                    <div style={styles.cartItemName}>
-                                      {item.item_name}
-                                      <span style={{
-                                        marginLeft: 8,
-                                        fontSize: '9px',
-                                        backgroundColor: 'rgba(245, 158, 11, 0.12)',
-                                        color: 'var(--primary)',
-                                        padding: '2px 6px',
-                                        borderRadius: 'var(--radius-full)',
-                                        fontWeight: '700'
-                                      }}>NEW</span>
-                                    </div>
-                                    <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
-                                    
-                                    {/* Individual Item Note input */}
-                                    <input
-                                      type="text"
-                                      placeholder="Instructions (e.g. no spicy)"
-                                      value={item.notes || ''}
-                                      onChange={(e) => handleItemNotesChange(item.id, e.target.value)}
-                                      style={styles.itemNoteInput}
-                                    />
-                                  </div>
-
-                                  <div style={styles.cartItemQuantityArea}>
-                                    <div style={styles.qtyControls}>
-                                      <button 
-                                        onClick={() => handleUpdateQty(item.id, item.quantity - 1)}
-                                        style={styles.cartQtyBtn}
-                                      >
-                                        <Minus size={12} />
-                                      </button>
-                                      <span style={{ width: '20px', textAlign: 'center', fontSize: '14px', fontWeight: '600' }}>
-                                        {item.quantity}
-                                      </span>
-                                      <button 
-                                        onClick={() => handleUpdateQty(item.id, item.quantity + 1)}
-                                        style={styles.cartQtyBtn}
-                                      >
-                                        <Plus size={12} />
-                                      </button>
-                                    </div>
-                                    <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
-                                    <button
-                                      onClick={() => handleRemoveFromCart(item.id)}
-                                      style={styles.cartDeleteBtn}
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </>
-                          )}
-                        </div>
-
-                        {/* Summary & Buttons */}
-                        <div style={styles.cartSummary}>
-                          {/* General Order Notes */}
-                          <div style={{ marginBottom: 16 }}>
-                            <label style={styles.label}>General Order Notes</label>
-                            <textarea
-                              placeholder="e.g. Serve dessert at the end"
-                              value={orderNotes}
-                              onChange={(e) => setOrderNotes(e.target.value)}
-                              rows={2}
-                              style={{ width: '100%', marginTop: '6px', fontSize: '13px' }}
+                            <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
+                            
+                            <input
+                              type="text"
+                              placeholder="Instructions (e.g. no spicy)"
+                              value={item.notes || ''}
+                              onChange={(e) => handleItemNotesChange(item.id, e.target.value)}
+                              style={styles.itemNoteInput}
                             />
                           </div>
 
-                          <div style={styles.subtotalRow}>
-                            <span>Total Bill Amount:</span>
-                            <strong style={{ fontSize: '20px', color: 'var(--primary)' }}>
-                              Rs. {confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0) + cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}
-                            </strong>
-                          </div>
-
-                          {/* Dual Action Buttons (Save Draft vs Confirm Order) */}
-                          <div style={styles.actionBtnRow}>
-                            <button
-                              onClick={() => handleSubmitOrder(false)}
-                              disabled={loading || cart.length === 0}
-                              style={styles.saveDraftBtn}
-                            >
-                              Save Draft
-                            </button>
-                            <button
-                              onClick={() => handleSubmitOrder(true)}
-                              disabled={loading || cart.length === 0}
-                              style={styles.confirmBtn}
-                            >
-                              {loading ? 'Confirming...' : 'Confirm & Kitchen Send'}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div style={styles.startOrderView}>
-                        <Clipboard size={48} color="var(--primary)" style={{ marginBottom: 16 }} />
-                        <h3 style={{ fontSize: '18px', fontFamily: 'var(--font-serif)', marginBottom: 8 }}>
-                          {activeSession ? 'Add Another Order' : 'No Active Order'} — {selectedTable.table_number}
-                        </h3>
-                        <p style={{ fontSize: '14px', color: 'var(--text-muted)', marginBottom: 20, textAlign: 'center' }}>
-                          {activeSession 
-                            ? `This table has ${sessionOrders.filter(o => o.status !== 'cancelled').length} order(s) in this session. Start a new order to add more items.`
-                            : 'This table is currently available. Start an order to open the restaurant menu.'
-                          }
-                        </p>
-                        <button onClick={handleStartOrder} style={styles.startOrderBtn} className="glow-hover">
-                          {activeSession ? 'Start Additional Order' : 'Start New Order'}
-                        </button>
-                      </div>
-                    )
-                  ) : (
-                    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexShrink: 0 }}>
-                        <h3 style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-main)' }}>
-                          Session Orders for {selectedTable.table_number}
-                        </h3>
-                      </div>
-                      
-                      {sessionOrders.length === 0 ? (
-                        <div style={{
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flex: 1,
-                          color: 'var(--text-muted)',
-                          fontSize: '13px',
-                          padding: '40px 0'
-                        }}>
-                          <Clipboard size={32} color="var(--border-color)" style={{ marginBottom: 8 }} />
-                          <p>No orders in this session yet.</p>
-                        </div>
-                      ) : (
-                        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>
-                          {sessionOrders.map((o) => (
-                            <div 
-                              key={o.id}
-                              style={{
-                                padding: '16px',
-                                borderRadius: 'var(--radius-sm)',
-                                backgroundColor: 'var(--bg-surface-elevated)',
-                                border: '1px solid var(--border-color)',
-                                fontSize: '13px',
-                                display: 'flex',
-                                flexDirection: 'column',
-                                gap: '10px'
-                              }}
-                            >
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                <div>
-                                  <div style={{ fontWeight: '600', color: 'var(--text-main)' }}>Order #{o.id.slice(0, 8)}</div>
-                                  <div style={{ color: 'var(--text-muted)', fontSize: '11px', marginTop: '2px' }}>
-                                    {new Date(o.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
-                                  </div>
-                                </div>
-                                <div style={{ textAlign: 'right' }}>
-                                  <span style={{
-                                    fontSize: '9px',
-                                    fontWeight: '700',
-                                    padding: '3px 8px',
-                                    borderRadius: 'var(--radius-full)',
-                                    backgroundColor: o.status === 'completed' ? 'rgba(16, 185, 129, 0.12)' :
-                                                    o.status === 'confirmed' ? 'rgba(99, 102, 241, 0.12)' :
-                                                    o.status === 'pending' ? 'rgba(245, 158, 11, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-                                    color: o.status === 'completed' ? 'var(--success)' :
-                                           o.status === 'confirmed' ? 'var(--secondary)' :
-                                           o.status === 'pending' ? 'var(--primary)' : 'var(--danger)',
-                                    textTransform: 'uppercase'
-                                  }}>
-                                    {o.status}
-                                  </span>
-                                </div>
-                              </div>
-                              
-                              {/* Order items list breakdown */}
-                              <div style={{ borderTop: '1px dashed var(--border-color)', paddingTop: '8px' }}>
-                                {o.order_items && o.order_items.length > 0 ? (
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                                    {o.order_items.map((item: any) => (
-                                      <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px' }}>
-                                        <span style={{ color: 'var(--text-main)' }}>{item.quantity}x {item.item_name}</span>
-                                        <span style={{ color: 'var(--text-muted)' }}>Rs. {item.price_at_order * item.quantity}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                ) : (
-                                  <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No items listed.</span>
-                                )}
-                              </div>
-
-                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-color)', paddingTop: '8px', marginTop: '4px' }}>
-                                <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Billed Total</span>
-                                <strong style={{ color: 'var(--primary)', fontSize: '14px' }}>Rs. {o.total_amount}</strong>
-                              </div>
+                          <div style={styles.cartItemQuantityArea}>
+                            <div style={styles.qtyControls}>
+                              <button 
+                                onClick={() => handleUpdateQty(item.id, item.quantity - 1)}
+                                style={styles.cartQtyBtn}
+                              >
+                                <Minus size={12} />
+                              </button>
+                              <span style={{ width: '20px', textAlign: 'center', fontSize: '14px', fontWeight: '600' }}>
+                                {item.quantity}
+                              </span>
+                              <button 
+                                onClick={() => handleUpdateQty(item.id, item.quantity + 1)}
+                                style={styles.cartQtyBtn}
+                              >
+                                <Plus size={12} />
+                              </button>
                             </div>
-                          ))}
+                            <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
+                            <button
+                              onClick={() => handleRemoveFromCart(item.id)}
+                              style={styles.cartDeleteBtn}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
                         </div>
-                      )}
-                    </div>
+                      ))}
+                    </>
                   )}
+                </div>
+
+                <div style={styles.cartSummary}>
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={styles.label}>General Order Notes</label>
+                    <textarea
+                      placeholder="e.g. Serve dessert at the end"
+                      value={orderNotes}
+                      onChange={(e) => setOrderNotes(e.target.value)}
+                      rows={2}
+                      style={{ width: '100%', marginTop: '6px', fontSize: '13px' }}
+                    />
+                  </div>
+
+                  <div style={styles.subtotalRow}>
+                    <span>Total Bill Amount:</span>
+                    <strong style={{ fontSize: '20px', color: 'var(--primary)' }}>
+                      Rs. {confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0) + cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}
+                    </strong>
+                  </div>
+
+                  <div style={{ ...styles.actionBtnRow, gridTemplateColumns: '1fr 1.2fr 1.5fr' }}>
+                    <button
+                      onClick={() => setCurrentStep(2)}
+                      style={styles.saveDraftBtn}
+                    >
+                      Back
+                    </button>
+                    <button
+                      onClick={() => handleSubmitOrder(false)}
+                      disabled={loading || cart.length === 0}
+                      style={styles.saveDraftBtn}
+                    >
+                      Save Draft
+                    </button>
+                    <button
+                      onClick={() => handleSubmitOrder(true)}
+                      disabled={loading || cart.length === 0}
+                      style={styles.confirmBtn}
+                    >
+                      {loading ? 'Sending...' : 'Kitchen Send'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="responsive-pos-split">
+          <div style={styles.leftColumn}>
+            {!isOrdering ? (
+              <div style={styles.panel} className="glass">
+                <h2 style={styles.sectionHeading}>Dining Tables</h2>
+                <div style={styles.tablesGrid}>
+                  {tables.map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => handleTableSelect(t)}
+                      style={{
+                        ...styles.tableBtn,
+                        borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
+                        backgroundColor: t.status === 'occupied' 
+                          ? 'rgba(217, 119, 6, 0.08)' 
+                          : t.status === 'reserved' 
+                            ? 'rgba(79, 70, 229, 0.08)'
+                            : 'rgba(0, 0, 0, 0.02)',
+                        boxShadow: selectedTable?.id === t.id ? 'var(--shadow-glow)' : 'none',
+                      }}
+                    >
+                      <span style={styles.tableNum}>{t.table_number}</span>
+                      <span style={{
+                        ...styles.tableStatusText,
+                        color: t.status === 'occupied' ? 'var(--primary)' : 
+                               t.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
+                      }}>
+                        {t.status.toUpperCase()}
+                      </span>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Cap: {t.seating_capacity}</span>
+                    </button>
+                  ))}
                 </div>
               </div>
             ) : (
-              <div style={styles.emptyDetails}>
-                <Info size={40} color="var(--border-color)" style={{ marginBottom: 12 }} />
-                <h3>Select a Dining Table</h3>
-                <p style={{ marginTop: 8, fontSize: '13px' }}>Choose a table from the left panel to begin ordering.</p>
-              </div>
+              selectedTable && (
+                <div className="glass" style={{ ...styles.panel, flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '24px' }}>
+                  <div style={styles.menuHeader}>
+                    <div>
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
+                      <h2 style={styles.sectionHeading}>Browse Restaurant Menu</h2>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <button
+                        onClick={handleAddSelectedToCart}
+                        disabled={Object.keys(selectedItemsMap).length === 0}
+                        style={{
+                          backgroundColor: Object.keys(selectedItemsMap).length === 0 ? 'var(--bg-surface-elevated)' : 'var(--primary)',
+                          color: Object.keys(selectedItemsMap).length === 0 ? 'var(--text-muted)' : 'var(--bg-main)',
+                          border: '1px solid ' + (Object.keys(selectedItemsMap).length === 0 ? 'var(--border-color)' : 'var(--primary)'),
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '10px 16px',
+                          fontSize: '13px',
+                          fontWeight: '600',
+                          cursor: Object.keys(selectedItemsMap).length === 0 ? 'not-allowed' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          transition: 'var(--transition-fast)',
+                          boxShadow: Object.keys(selectedItemsMap).length === 0 ? 'none' : 'var(--shadow-glow)'
+                        }}
+                      >
+                        <Plus size={16} />
+                        Add Selected ({Object.keys(selectedItemsMap).length})
+                      </button>
+                      <div style={styles.searchBar}>
+                        <Search size={16} color="var(--text-muted)" style={{ marginRight: 8 }} />
+                        <input
+                          type="text"
+                          placeholder="Search menu..."
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          style={styles.searchInput}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={styles.categoriesContainer}>
+                    <button
+                      onClick={() => setSelectedCategoryId('all')}
+                      style={{
+                        ...styles.categoryTab,
+                        backgroundColor: selectedCategoryId === 'all' ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                        color: selectedCategoryId === 'all' ? '#fff' : 'var(--text-main)',
+                      }}
+                    >
+                      All Items
+                    </button>
+                    {categories.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => setSelectedCategoryId(c.id)}
+                        style={{
+                          ...styles.categoryTab,
+                          backgroundColor: selectedCategoryId === c.id ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                          color: selectedCategoryId === c.id ? '#fff' : 'var(--text-main)',
+                        }}
+                      >
+                        {c.name}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={styles.menuGridContainer}>
+                    {filteredMenuItems.length === 0 ? (
+                      <div style={styles.emptyState}>No items match your search.</div>
+                    ) : (
+                      <div style={styles.menuItemsGrid}>
+                        {filteredMenuItems.map((item) => {
+                          const isSelected = selectedItemsMap[item.id] !== undefined;
+                          return (
+                            <div 
+                              key={item.id} 
+                              onClick={() => toggleItemSelection(item)}
+                              style={{
+                                ...styles.menuItemCard,
+                                border: isSelected ? '2px solid var(--primary)' : '1px solid var(--border-color)',
+                                backgroundColor: isSelected ? 'rgba(245, 158, 11, 0.03)' : 'var(--bg-surface)',
+                                position: 'relative',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                justifyContent: 'space-between',
+                                height: '100%',
+                                cursor: 'pointer'
+                              }}
+                              className="glow-hover"
+                            >
+                              <div>
+                                <div style={{
+                                  position: 'absolute',
+                                  top: '8px',
+                                  right: '8px',
+                                  zIndex: 10,
+                                  width: '20px',
+                                  height: '20px',
+                                  borderRadius: '4px',
+                                  border: '2px solid ' + (isSelected ? 'var(--primary)' : 'var(--border-color)'),
+                                  backgroundColor: isSelected ? 'var(--primary)' : 'rgba(0, 0, 0, 0.3)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  transition: 'var(--transition-fast)'
+                                }}>
+                                  {isSelected && <Check size={12} color="#fff" strokeWidth={3} />}
+                                </div>
+
+                                {item.image_url ? (
+                                  <img src={item.image_url} alt={item.name} style={styles.itemImg} />
+                                ) : (
+                                  <div style={styles.itemNoImg}>
+                                    <Image size={20} color="var(--text-muted)" />
+                                  </div>
+                                )}
+                                <div style={styles.itemInfo}>
+                                  <h4 style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-main)', margin: '0 0 4px 0' }}>{item.name}</h4>
+                                  <span style={styles.itemPrice}>Rs. {item.price}</span>
+                                </div>
+                              </div>
+
+                              {isSelected && (
+                                <div 
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    padding: '6px 12px',
+                                    borderTop: '1px solid var(--border-color)',
+                                    backgroundColor: 'var(--bg-surface-elevated)',
+                                    gap: '8px',
+                                    borderBottomLeftRadius: 'var(--radius-sm)',
+                                    borderBottomRightRadius: 'var(--radius-sm)'
+                                  }}
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', justifyContent: 'space-between' }}>
+                                    <button 
+                                      onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] - 1)}
+                                      style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        width: '20px',
+                                        height: '20px',
+                                        borderRadius: '50%',
+                                        border: '1px solid var(--border-color)',
+                                        backgroundColor: 'var(--bg-surface)',
+                                        color: 'var(--text-main)',
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      <Minus size={10} />
+                                    </button>
+                                    <span style={{ fontSize: '12px', fontWeight: '700' }}>
+                                      {selectedItemsMap[item.id]}
+                                    </span>
+                                    <button 
+                                      onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] + 1)}
+                                      style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        width: '20px',
+                                        height: '20px',
+                                        borderRadius: '50%',
+                                        border: '1px solid var(--border-color)',
+                                        backgroundColor: 'var(--bg-surface)',
+                                        color: 'var(--text-main)',
+                                        cursor: 'pointer'
+                                      }}
+                                    >
+                                      <Plus size={10} />
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
             )}
           </div>
+
+          <div style={styles.rightColumn}>
+            <div style={{ ...styles.panel, height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }} className="glass">
+              {selectedTable ? (
+                !isOrdering ? (
+                  renderTableDetails()
+                ) : (
+                  activeOrder ? (
+                    <div style={styles.cartContainer}>
+                      <div style={styles.cartHeader}>
+                        <div>
+                          <h2 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', color: 'var(--text-main)' }}>Table {selectedTable.table_number} Order</h2>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Status: {activeOrder.status.toUpperCase()}</span>
+                        </div>
+                      </div>
+
+                      <div style={styles.cartItemsList}>
+                        {confirmedItems.length === 0 && cart.length === 0 ? (
+                          <div style={styles.emptyCart}>
+                            <ShoppingCart size={32} color="var(--border-color)" style={{ marginBottom: 8 }} />
+                            <p>Your order card is empty.</p>
+                            <p style={{ fontSize: '12px' }}>Tap menu items to add.</p>
+                          </div>
+                        ) : (
+                          <>
+                            {confirmedItems.map((item) => (
+                              <div key={item.id} style={{ ...styles.cartItemRow, opacity: 0.85, backgroundColor: 'rgba(16, 185, 129, 0.02)', borderLeft: '3px solid var(--success)' }}>
+                                <div style={{ flex: 1 }}>
+                                  <div style={styles.cartItemName}>
+                                    {item.item_name}
+                                    <span style={{
+                                      marginLeft: 8,
+                                      fontSize: '9px',
+                                      backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                                      color: 'var(--success)',
+                                      padding: '2px 6px',
+                                      borderRadius: 'var(--radius-full)',
+                                      fontWeight: '700'
+                                    }}>COOKING</span>
+                                  </div>
+                                  <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
+                                  {item.notes && <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>* {item.notes}</div>}
+                                </div>
+                                <div style={styles.cartItemQuantityArea}>
+                                  <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginRight: '12px' }}>Qty: {item.quantity}</span>
+                                  <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
+                                </div>
+                              </div>
+                            ))}
+
+                            {cart.map((item) => (
+                              <div key={item.id} style={{ ...styles.cartItemRow, borderLeft: '3px solid var(--primary)', backgroundColor: 'rgba(245, 158, 11, 0.01)' }}>
+                                <div style={{ flex: 1 }}>
+                                  <div style={styles.cartItemName}>
+                                    {item.item_name}
+                                    <span style={{
+                                      marginLeft: 8,
+                                      fontSize: '9px',
+                                      backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                                      color: 'var(--primary)',
+                                      padding: '2px 6px',
+                                      borderRadius: 'var(--radius-full)',
+                                      fontWeight: '700'
+                                    }}>NEW</span>
+                                  </div>
+                                  <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
+                                  
+                                  <input
+                                    type="text"
+                                    placeholder="Instructions (e.g. no spicy)"
+                                    value={item.notes || ''}
+                                    onChange={(e) => handleItemNotesChange(item.id, e.target.value)}
+                                    style={styles.itemNoteInput}
+                                  />
+                                </div>
+
+                                <div style={styles.cartItemQuantityArea}>
+                                  <div style={styles.qtyControls}>
+                                    <button 
+                                      onClick={() => handleUpdateQty(item.id, item.quantity - 1)}
+                                      style={styles.cartQtyBtn}
+                                    >
+                                      <Minus size={12} />
+                                    </button>
+                                    <span style={{ width: '20px', textAlign: 'center', fontSize: '14px', fontWeight: '600' }}>
+                                      {item.quantity}
+                                    </span>
+                                    <button 
+                                      onClick={() => handleUpdateQty(item.id, item.quantity + 1)}
+                                      style={styles.cartQtyBtn}
+                                    >
+                                      <Plus size={12} />
+                                    </button>
+                                  </div>
+                                  <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
+                                  <button
+                                    onClick={() => handleRemoveFromCart(item.id)}
+                                    style={styles.cartDeleteBtn}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+
+                      <div style={styles.cartSummary}>
+                        <div style={{ marginBottom: 16 }}>
+                          <label style={styles.label}>General Order Notes</label>
+                          <textarea
+                            placeholder="e.g. Serve dessert at the end"
+                            value={orderNotes}
+                            onChange={(e) => setOrderNotes(e.target.value)}
+                            rows={2}
+                            style={{ width: '100%', marginTop: '6px', fontSize: '13px' }}
+                          />
+                        </div>
+
+                        <div style={styles.subtotalRow}>
+                          <span>Total Bill Amount:</span>
+                          <strong style={{ fontSize: '20px', color: 'var(--primary)' }}>
+                            Rs. {confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0) + cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}
+                          </strong>
+                        </div>
+
+                        <div style={{ ...styles.actionBtnRow, gridTemplateColumns: '1fr 1.2fr 1.5fr' }}>
+                          <button
+                            onClick={handleCancelOrdering}
+                            style={styles.saveDraftBtn}
+                          >
+                            Back
+                          </button>
+                          <button
+                            onClick={() => handleSubmitOrder(false)}
+                            disabled={loading || cart.length === 0}
+                            style={styles.saveDraftBtn}
+                          >
+                            Save Draft
+                          </button>
+                          <button
+                            onClick={() => handleSubmitOrder(true)}
+                            disabled={loading || cart.length === 0}
+                            style={styles.confirmBtn}
+                          >
+                            {loading ? 'Confirming...' : 'Kitchen Send'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={styles.emptyDetails}>
+                      <Info size={40} color="var(--border-color)" style={{ marginBottom: 12 }} />
+                      <h3>No Active Order</h3>
+                      <button onClick={handleBeginOrdering} style={styles.startOrderBtn}>
+                        Start Order
+                      </button>
+                    </div>
+                  )
+                )
+              ) : (
+                <div style={styles.emptyDetails}>
+                  <Info size={40} color="var(--border-color)" style={{ marginBottom: 12 }} />
+                  <h3>Select a Dining Table</h3>
+                  <p style={{ marginTop: 8, fontSize: '13px' }}>Choose a table from the left panel to begin ordering.</p>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1093,13 +1584,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: 'var(--text-muted)',
     textAlign: 'center',
   },
-  startOrderView: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-  },
   startOrderBtn: {
     backgroundColor: 'var(--primary)',
     color: '#fff',
@@ -1121,19 +1605,6 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     paddingBottom: '16px',
     borderBottom: '1px solid var(--border-color)',
-    flexShrink: 0,
-  },
-  lockBanner: {
-    display: 'flex',
-    alignItems: 'center',
-    backgroundColor: 'rgba(239, 68, 68, 0.08)',
-    border: '1px solid rgba(239, 68, 68, 0.15)',
-    color: 'var(--danger)',
-    padding: '8px 12px',
-    borderRadius: 'var(--radius-sm)',
-    fontSize: '12px',
-    marginTop: '12px',
-    fontWeight: '500',
     flexShrink: 0,
   },
   cartItemsList: {
@@ -1239,7 +1710,6 @@ const styles: Record<string, React.CSSProperties> = {
   },
   actionBtnRow: {
     display: 'grid',
-    gridTemplateColumns: '1fr 1.3fr',
     gap: '12px',
   },
   saveDraftBtn: {
@@ -1261,5 +1731,91 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: '600',
     fontSize: '13px',
     cursor: 'pointer',
+  },
+  mobileStepperHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '12px 16px',
+    backgroundColor: 'var(--bg-surface)',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius-md)',
+    marginBottom: '16px',
+  },
+  mobileStepperStep: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  stepNumber: {
+    width: '24px',
+    height: '24px',
+    borderRadius: '50%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: '12px',
+    fontWeight: '700',
+  },
+  tableDetailsPanel: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '20px',
+    padding: '24px',
+    borderRadius: 'var(--radius-md)',
+    backgroundColor: 'var(--bg-surface)',
+    border: '1px solid var(--border-color)',
+  },
+  mobileBottomBar: {
+    position: 'fixed',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'var(--bg-surface)',
+    borderTop: '1px solid var(--border-color)',
+    padding: '16px',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    zIndex: 100,
+    boxShadow: '0 -4px 10px rgba(0, 0, 0, 0.05)',
+  },
+  mobileBottomInfo: {
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  mobileBottomActions: {
+    display: 'flex',
+    gap: '10px',
+  },
+  backBtn: {
+    padding: '10px 16px',
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--border-color)',
+    backgroundColor: 'var(--bg-surface)',
+    color: 'var(--text-main)',
+    fontWeight: '600',
+    fontSize: '13px',
+    cursor: 'pointer',
+  },
+  nextBtn: {
+    padding: '10px 20px',
+    borderRadius: 'var(--radius-sm)',
+    border: 'none',
+    backgroundColor: 'var(--primary)',
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: '13px',
+    cursor: 'pointer',
+  },
+  detailCard: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '16px',
+    backgroundColor: 'var(--bg-surface-elevated)',
+    border: '1px solid var(--border-color)',
+    borderRadius: 'var(--radius-sm)',
+    padding: '16px',
+    marginTop: '16px',
   },
 };
