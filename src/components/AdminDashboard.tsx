@@ -66,6 +66,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [showBillPreview, setShowBillPreview] = useState(false);
   const [billingTab, setBillingTab] = useState<'full' | 'split'>('full');
   const [splitSelectedItems, setSplitSelectedItems] = useState<Record<string, number>>({});
+  const [discountType, setDiscountType] = useState<'none' | 'percentage' | 'amount'>('none');
+  const [discountValue, setDiscountValue] = useState('');
 
   const supabase = getSupabaseClient();
 
@@ -406,7 +408,25 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const handleViewOrder = async (order: any) => {
     if (!supabase) return;
     setSelectedOrder(order);
-    setEditOrderNotes(order.notes || '');
+    
+    // Parse notes for discount
+    let dType: 'none' | 'percentage' | 'amount' = 'none';
+    let dVal = '';
+    let parsedNotes = order.notes || '';
+    if (order.notes) {
+      try {
+        const trimmed = order.notes.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+          const parsed = JSON.parse(trimmed);
+          dType = parsed.discount_type || 'none';
+          dVal = parsed.discount_value ? parsed.discount_value.toString() : '';
+          parsedNotes = parsed.notes || '';
+        }
+      } catch (e) {}
+    }
+    setDiscountType(dType);
+    setDiscountValue(dVal);
+    setEditOrderNotes(parsedNotes);
     setIsEditingOrder(false);
     setBillingTab('full');
     setSplitSelectedItems({});
@@ -420,6 +440,78 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       setSelectedOrderItems(data || []);
     } catch (err: any) {
       showToast(err.message || 'Error fetching order items', false);
+    }
+  };
+
+  const serializeOrderNotes = (notesText: string, type: string, val: number, amt: number) => {
+    if (type === 'none') return notesText;
+    return JSON.stringify({
+      discount_type: type,
+      discount_value: val,
+      discount_amount: amt,
+      notes: notesText
+    });
+  };
+
+  const handleApplyDiscount = async () => {
+    if (!supabase || !selectedOrder) return;
+
+    // Calculate subtotal of current order items
+    const subtotal = selectedOrderItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0);
+    
+    let appliedDiscountAmt = 0;
+    const val = parseFloat(discountValue) || 0;
+
+    if (discountType === 'percentage') {
+      if (val < 0 || val > 100) {
+        showToast('Discount percentage must be between 0 and 100', false);
+        return;
+      }
+      appliedDiscountAmt = Math.round((subtotal * val) / 100);
+    } else if (discountType === 'amount') {
+      if (val < 0 || val > subtotal) {
+        showToast('Discount amount cannot exceed the order subtotal', false);
+        return;
+      }
+      appliedDiscountAmt = val;
+    }
+
+    const finalAmount = Math.max(0, subtotal - appliedDiscountAmt);
+
+    setLoading(true);
+    try {
+      const serializedNotes = serializeOrderNotes(
+        editOrderNotes,
+        discountType,
+        val,
+        appliedDiscountAmt
+      );
+
+      const { error: err } = await supabase
+        .from('orders')
+        .update({
+          total_amount: finalAmount,
+          notes: serializedNotes
+        })
+        .eq('id', selectedOrder.id);
+
+      if (err) throw err;
+
+      showToast('Discount applied successfully');
+      
+      const updatedOrder = {
+        ...selectedOrder,
+        total_amount: finalAmount,
+        notes: serializedNotes
+      };
+      setSelectedOrder(updatedOrder);
+      
+      // Update in orders list
+      setOrders(orders.map(o => o.id === selectedOrder.id ? updatedOrder : o));
+    } catch (err: any) {
+      showToast(err.message || 'Error applying discount', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -703,13 +795,23 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         if (insErr) throw insErr;
       }
 
-      const totalAmount = selectedOrderItems.reduce((total, item) => total + (item.price_at_order * item.quantity), 0);
+      // Recalculate discount if active
+      const newSubtotal = selectedOrderItems.reduce((total, item) => total + (item.price_at_order * item.quantity), 0);
+      let newDiscountAmt = 0;
+      const val = parseFloat(discountValue) || 0;
+      if (discountType === 'percentage') {
+        newDiscountAmt = Math.round((newSubtotal * val) / 100);
+      } else if (discountType === 'amount') {
+        newDiscountAmt = Math.min(newSubtotal, val);
+      }
+      const finalAmount = Math.max(0, newSubtotal - newDiscountAmt);
+      const serializedNotes = serializeOrderNotes(editOrderNotes, discountType, val, newDiscountAmt);
 
       const { error: updErr } = await supabase
         .from('orders')
         .update({
-          total_amount: totalAmount,
-          notes: editOrderNotes
+          total_amount: finalAmount,
+          notes: serializedNotes
         })
         .eq('id', selectedOrder.id);
       if (updErr) throw updErr;
@@ -717,7 +819,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       showToast('Order successfully updated');
       setIsEditingOrder(false);
       
-      const updatedOrder = { ...selectedOrder, total_amount: totalAmount, notes: editOrderNotes };
+      const updatedOrder = { ...selectedOrder, total_amount: finalAmount, notes: serializedNotes };
       setSelectedOrder(updatedOrder);
       fetchData();
     } catch (err: any) {
@@ -1080,10 +1182,124 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                       </div>
                     )}
 
-                    <div style={styles.totalRow}>
-                      <span>Total Amount:</span>
-                      <strong style={{ fontSize: '18px', color: 'var(--primary)' }}>Rs. {selectedOrder.total_amount}</strong>
-                    </div>
+                    {/* Discount Input UI */}
+                    {selectedOrder.status !== 'completed' && selectedOrder.status !== 'cancelled' && !isEditingOrder && (
+                      <div style={{
+                        padding: '12px',
+                        borderRadius: 'var(--radius-sm)',
+                        backgroundColor: 'var(--bg-surface-elevated)',
+                        border: '1px solid var(--border-color)',
+                        marginTop: '16px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '8px',
+                        boxSizing: 'border-box'
+                      }}>
+                        <div style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          🏷️ Order Discount
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <select
+                            value={discountType}
+                            onChange={(e) => {
+                              const val = e.target.value as 'none' | 'percentage' | 'amount';
+                              setDiscountType(val);
+                              if (val === 'none') setDiscountValue('');
+                            }}
+                            style={{
+                              flex: '0 0 120px',
+                              padding: '6px',
+                              border: '1px solid var(--border-color)',
+                              borderRadius: 'var(--radius-sm)',
+                              backgroundColor: 'var(--bg-surface)',
+                              color: 'var(--text-main)',
+                              height: '34px',
+                              fontSize: '13px',
+                              outline: 'none'
+                            }}
+                          >
+                            <option value="none">No Discount</option>
+                            <option value="percentage">Percentage (%)</option>
+                            <option value="amount">Amount (Rs.)</option>
+                          </select>
+
+                          {discountType !== 'none' && (
+                            <input
+                              type="number"
+                              placeholder={discountType === 'percentage' ? '%' : 'Amount'}
+                              value={discountValue}
+                              onChange={(e) => setDiscountValue(e.target.value)}
+                              style={{
+                                flex: 1,
+                                padding: '6px 10px',
+                                border: '1px solid var(--border-color)',
+                                borderRadius: 'var(--radius-sm)',
+                                backgroundColor: 'var(--bg-surface)',
+                                color: 'var(--text-main)',
+                                height: '34px',
+                                fontSize: '13px',
+                                outline: 'none'
+                              }}
+                            />
+                          )}
+
+                          <button
+                            onClick={handleApplyDiscount}
+                            disabled={loading}
+                            style={{
+                              padding: '8px 14px',
+                              backgroundColor: 'var(--primary)',
+                              color: '#fff',
+                              border: 'none',
+                              borderRadius: 'var(--radius-sm)',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              cursor: 'pointer',
+                              height: '34px',
+                              transition: 'opacity 0.2s'
+                            }}
+                            className="glow-hover"
+                          >
+                            Apply
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Subtotal, Discount & Total Area */}
+                    {discountType !== 'none' && !isEditingOrder ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px dashed var(--border-color)', paddingTop: '12px', marginTop: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: 'var(--text-muted)' }}>
+                          <span>Subtotal:</span>
+                          <span>Rs. {selectedOrderItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', color: 'var(--primary)' }}>
+                          <span>Discount ({discountType === 'percentage' ? `${discountValue}%` : 'Flat'}):</span>
+                          <span>- Rs. {
+                            // Find discount amount
+                            (() => {
+                              let amt = 0;
+                              if (selectedOrder.notes) {
+                                try {
+                                  const parsed = JSON.parse(selectedOrder.notes);
+                                  amt = parsed.discount_amount || 0;
+                                } catch (e) {}
+                              }
+                              return amt;
+                            })()
+                          }</span>
+                        </div>
+                        <div style={{ ...styles.totalRow, marginTop: '4px', paddingTop: '8px', borderTop: '1px solid var(--border-color)' }}>
+                          <span>Total Amount:</span>
+                          <strong style={{ fontSize: '18px', color: 'var(--primary)' }}>Rs. {selectedOrder.total_amount}</strong>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={styles.totalRow}>
+                        <span>Total Amount:</span>
+                        <strong style={{ fontSize: '18px', color: 'var(--primary)' }}>Rs. {selectedOrder.total_amount}</strong>
+                      </div>
+                    )}
 
                     {selectedOrder.notes && !isEditingOrder && (
                       <div style={styles.notesBox}>

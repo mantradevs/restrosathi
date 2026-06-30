@@ -73,6 +73,27 @@ export default function KotPrintView({ order, items, tableNumber, settings = def
     ? allOrders!.reduce((sum, o) => sum + o.items.reduce((s, i) => s + i.quantity, 0), 0)
     : items.reduce((sum, i) => sum + i.quantity, 0);
 
+  // Parse order notes for discount
+  let discountType = 'none';
+  let discountValue = 0;
+  let discountAmount = 0;
+  let cleanNotes = order?.notes || '';
+
+  if (order?.notes) {
+    try {
+      const trimmed = order.notes.trim();
+      if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        const parsed = JSON.parse(trimmed);
+        discountType = parsed.discount_type || 'none';
+        discountValue = Number(parsed.discount_value) || 0;
+        discountAmount = Number(parsed.discount_amount) || 0;
+        cleanNotes = parsed.notes || '';
+      }
+    } catch (e) {
+      // Not JSON
+    }
+  }
+
   return (
     <div className="kot-print-area" style={containerStyle}>
       {/* Header */}
@@ -190,10 +211,10 @@ export default function KotPrintView({ order, items, tableNumber, settings = def
 
           <div className="kot-divider" style={printStyles.dashedLine}></div>
 
-          {order!.notes && (
+          {cleanNotes && (
             <div style={printStyles.orderNotes}>
               <strong>Special Instructions:</strong>
-              <p style={{ marginTop: '4px', fontStyle: 'italic' }}>{order!.notes}</p>
+              <p style={{ marginTop: '4px', fontStyle: 'italic' }}>{cleanNotes}</p>
               <div className="kot-divider" style={printStyles.dashedLine}></div>
             </div>
           )}
@@ -202,10 +223,24 @@ export default function KotPrintView({ order, items, tableNumber, settings = def
 
       {/* Total */}
       {activeSettings.show_price && (
-        <div style={printStyles.totalRow}>
-          <span>{isConsolidated ? 'GRAND TOTAL:' : 'TOTAL AMOUNT:'}</span>
-          <strong>Rs. {consolidatedTotal}</strong>
-        </div>
+        <>
+          {discountType !== 'none' && (
+            <>
+              <div style={{ ...printStyles.subtotalRow, fontWeight: 'bold' }}>
+                <span>SUBTOTAL:</span>
+                <span>Rs. {consolidatedTotal}</span>
+              </div>
+              <div style={printStyles.subtotalRow}>
+                <span>DISCOUNT ({discountType === 'percentage' ? `${discountValue}%` : 'Flat'}):</span>
+                <span>- Rs. {discountAmount}</span>
+              </div>
+            </>
+          )}
+          <div style={printStyles.totalRow}>
+            <span>{isConsolidated ? 'GRAND TOTAL:' : 'TOTAL AMOUNT:'}</span>
+            <strong>Rs. {consolidatedTotal - discountAmount}</strong>
+          </div>
+        </>
       )}
 
       {/* Footer */}
