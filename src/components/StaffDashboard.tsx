@@ -168,103 +168,11 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
     }
   };
 
-  const handleBeginOrdering = async () => {
-    if (!supabase || !selectedTable) return;
-    
-    setLoading(true);
-    try {
-      let session = activeSession;
-
-      // If no active session, create one and mark table occupied
-      if (!session) {
-        const { error: tErr } = await supabase
-          .from('restaurant_tables')
-          .update({ status: 'occupied' })
-          .eq('id', selectedTable.id);
-        if (tErr) throw tErr;
-
-        const { data: sessionData, error: sErr } = await supabase
-          .from('table_sessions')
-          .insert({ table_id: selectedTable.id, status: 'active' })
-          .select()
-          .single();
-        if (sErr) throw sErr;
-        session = sessionData;
-        setActiveSession(session);
-        setSelectedTable((prev: any) => prev ? { ...prev, status: 'occupied' } : null);
-      }
-
-      // Check if an active order (pending or confirmed) already exists in this session
-      let order = activeOrder;
-      
-      // Reuse the existing active order (pending or confirmed) in this session,
-      // and only create a new order if there are none.
-      if (!order || (order.status !== 'pending' && order.status !== 'confirmed')) {
-        const { data: activeOrders } = await supabase
-          .from('orders')
-          .select('*')
-          .eq('session_id', session.id)
-          .in('status', ['pending', 'confirmed'])
-          .order('created_at', { ascending: false })
-          .limit(1);
-
-        if (activeOrders && activeOrders.length > 0) {
-          order = activeOrders[0];
-          setActiveOrder(order);
-          setOrderNotes(order.notes || '');
-
-          const { data: itemsData } = await supabase
-            .from('order_items')
-            .select('*')
-            .eq('order_id', order.id);
-
-          const dbItems = itemsData || [];
-          const pending = dbItems.filter((it: any) => (it.status || 'confirmed') === 'pending');
-          const confirmed = dbItems.filter((it: any) => (it.status || 'confirmed') === 'confirmed');
-
-          setCart(pending);
-          setConfirmedItems(confirmed);
-        } else {
-          // Create new pending order
-          const { data: orderData, error: orderErr } = await supabase
-            .from('orders')
-            .insert({
-              table_id: selectedTable.id,
-              session_id: session.id,
-              status: 'pending',
-              payment_status: 'unpaid',
-              total_amount: 0,
-              created_by: user.name,
-              notes: ''
-            })
-            .select()
-            .single();
-          if (orderErr) throw orderErr;
-          order = orderData;
-          setActiveOrder(order);
-          setCart([]);
-          setConfirmedItems([]);
-          setOrderNotes('');
-        }
-      }
-
-      setIsOrdering(true);
-      if (window.innerWidth <= 768) {
-        setCurrentStep(2);
-      }
-      
-      // Refresh session orders list
-      const { data: allOrders } = await supabase
-        .from('orders')
-        .select('*, order_items(*)')
-        .eq('session_id', session.id)
-        .order('created_at', { ascending: false });
-      setSessionOrders(allOrders || []);
-      
-    } catch (err: any) {
-      showToast(err.message || 'Error starting order', false);
-    } finally {
-      setLoading(false);
+  const handleBeginOrdering = () => {
+    if (!selectedTable) return;
+    setIsOrdering(true);
+    if (window.innerWidth <= 768) {
+      setCurrentStep(2);
     }
   };
 
@@ -303,7 +211,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
   };
 
   const handleReviewOrderWithSelected = () => {
-    if (!activeOrder) {
+    if (!selectedTable) {
       setCurrentStep(3);
       return;
     }
@@ -326,7 +234,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
           } else {
             nextCart.push({
               id: `temp-${Date.now()}-${menuItem.id}`,
-              order_id: activeOrder.id,
+              order_id: activeOrder ? activeOrder.id : '',
               menu_item_id: menuItem.id,
               item_name: menuItem.name,
               price_at_order: menuItem.price || 0,
@@ -345,8 +253,8 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
   };
 
   const handleAddSelectedToCart = () => {
-    if (!activeOrder) {
-      showToast('No active order. Please select a table and start ordering.', false);
+    if (!selectedTable) {
+      showToast('Please select a table first.', false);
       return;
     }
 
@@ -372,7 +280,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
         } else {
           nextCart.push({
             id: `temp-${Date.now()}-${menuItem.id}`,
-            order_id: activeOrder.id,
+            order_id: activeOrder ? activeOrder.id : '',
             menu_item_id: menuItem.id,
             item_name: menuItem.name,
             price_at_order: menuItem.price || 0,
@@ -411,21 +319,73 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
 
   // Submit/Confirm Order
   const handleSubmitOrder = async (isConfirm: boolean) => {
-    if (!supabase || !activeOrder || !selectedTable) return;
+    if (!supabase || !selectedTable) return;
+
+    // Calculate total bill first
+    const confirmedTotal = confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0);
+    const cartTotal = cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0);
+    const totalBill = confirmedTotal + cartTotal;
+
+    if (totalBill <= 0) {
+      showToast('Cannot save or confirm an empty order (Rs. 0)', false);
+      return;
+    }
 
     setLoading(true);
     try {
-      // 1. Delete all current PENDING order items in DB for this order
+      let session = activeSession;
+
+      // 1. If no active session, create one and mark table occupied
+      if (!session) {
+        const { error: tErr } = await supabase
+          .from('restaurant_tables')
+          .update({ status: 'occupied' })
+          .eq('id', selectedTable.id);
+        if (tErr) throw tErr;
+
+        const { data: sessionData, error: sErr } = await supabase
+          .from('table_sessions')
+          .insert({ table_id: selectedTable.id, status: 'active' })
+          .select()
+          .single();
+        if (sErr) throw sErr;
+        session = sessionData;
+        setActiveSession(session);
+        setSelectedTable((prev: any) => prev ? { ...prev, status: 'occupied' } : null);
+      }
+
+      // 2. If no active order, create one
+      let order = activeOrder;
+      if (!order) {
+        const { data: orderData, error: orderErr } = await supabase
+          .from('orders')
+          .insert({
+            table_id: selectedTable.id,
+            session_id: session.id,
+            status: 'pending',
+            payment_status: 'unpaid',
+            total_amount: totalBill,
+            created_by: user.name,
+            notes: orderNotes
+          })
+          .select()
+          .single();
+        if (orderErr) throw orderErr;
+        order = orderData;
+        setActiveOrder(order);
+      }
+
+      // 3. Delete all current PENDING order items in DB for this order
       const { error: delErr } = await supabase
         .from('order_items')
         .delete()
-        .eq('order_id', activeOrder.id)
+        .eq('order_id', order.id)
         .eq('status', 'pending');
       if (delErr) throw delErr;
 
-      // 2. Insert the new ones from cart
+      // 4. Insert the new ones from cart
       const dbItems = cart.map(item => ({
-        order_id: activeOrder.id,
+        order_id: order.id,
         menu_item_id: item.menu_item_id,
         item_name: item.item_name,
         price_at_order: item.price_at_order,
@@ -441,12 +401,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
         if (insErr) throw insErr;
       }
 
-      // 3. Recalculate total bill: sum of all confirmed items + current cart items
-      const confirmedTotal = confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0);
-      const cartTotal = cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0);
-      const totalBill = confirmedTotal + cartTotal;
-
-      // 4. Update the Order table (updating status if confirmed)
+      // 5. Update the Order table (updating status if confirmed)
       const updatePayload: any = {
         total_amount: totalBill,
         notes: orderNotes
@@ -460,7 +415,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
       const { error: updErr } = await supabase
         .from('orders')
         .update(updatePayload)
-        .eq('id', activeOrder.id);
+        .eq('id', order.id);
       
       if (updErr) throw updErr;
 
@@ -550,6 +505,31 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
           </span>
         </div>
 
+        <div style={{ marginTop: '4px', marginBottom: '8px' }}>
+          <button
+            onClick={handleBeginOrdering}
+            style={{
+              width: '100%',
+              padding: '12px',
+              backgroundColor: 'var(--primary)',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '14px',
+              fontWeight: '600',
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '8px'
+            }}
+            className="glow-hover"
+          >
+            <Plus size={16} />
+            {hasPendingOrder ? 'Modify Draft Order' : activeSession ? 'Add Items to Order' : 'Start New Order'}
+          </button>
+        </div>
+
         {activeSession ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px' }}>
@@ -607,31 +587,6 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
             This table is currently available. Start ordering to open a session.
           </p>
         )}
-
-        <div style={{ marginTop: '12px' }}>
-          <button
-            onClick={handleBeginOrdering}
-            style={{
-              width: '100%',
-              padding: '12px',
-              backgroundColor: 'var(--primary)',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: '14px',
-              fontWeight: '600',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px'
-            }}
-            className="glow-hover"
-          >
-            <Plus size={16} />
-            {hasPendingOrder ? 'Modify Draft Order' : activeSession ? 'Add Items to Order' : 'Start New Order'}
-          </button>
-        </div>
       </div>
     );
   };
@@ -667,6 +622,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                       onClick={() => handleTableSelect(t)}
                       style={{
                         ...styles.tableBtn,
+                        padding: isMobile ? '16px 12px' : '12px 6px',
                         borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
                         backgroundColor: t.status === 'occupied' 
                           ? 'rgba(217, 119, 6, 0.08)' 
@@ -695,167 +651,180 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
           )}
 
           {currentStep === 2 && selectedTable && (
-            <div className="glass" style={{ ...styles.panel, display: 'flex', flexDirection: 'column', gap: '16px', padding: '16px', paddingBottom: '80px' }}>
-              <div style={styles.menuHeader}>
-                <div>
-                  <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
-                  <h2 style={{ ...styles.sectionHeading, marginBottom: 0 }}>Browse Menu</h2>
+            <>
+              <div className="glass" style={{ 
+                ...styles.panel, 
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: '12px', 
+                padding: '12px', 
+                height: 'calc(100dvh - 150px)',
+                minHeight: '400px',
+                position: 'relative'
+              }}>
+                <div style={styles.menuHeader}>
+                  <div>
+                    <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
+                    <h2 style={{ ...styles.sectionHeading, marginBottom: 0 }}>Browse Menu</h2>
+                  </div>
+                  <div style={{ ...styles.searchBar, width: '100%', maxWidth: '200px' }}>
+                    <Search size={16} color="var(--text-muted)" style={{ marginRight: 8 }} />
+                    <input
+                      type="text"
+                      placeholder="Search menu..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      style={styles.searchInput}
+                    />
+                  </div>
                 </div>
-                <div style={{ ...styles.searchBar, width: '100%', maxWidth: '200px' }}>
-                  <Search size={16} color="var(--text-muted)" style={{ marginRight: 8 }} />
-                  <input
-                    type="text"
-                    placeholder="Search menu..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    style={styles.searchInput}
-                  />
-                </div>
-              </div>
 
-              <div style={styles.categoriesContainer}>
-                <button
-                  onClick={() => setSelectedCategoryId('all')}
-                  style={{
-                    ...styles.categoryTab,
-                    backgroundColor: selectedCategoryId === 'all' ? 'var(--primary)' : 'var(--bg-surface-elevated)',
-                    color: selectedCategoryId === 'all' ? '#fff' : 'var(--text-main)',
-                  }}
-                >
-                  All Items
-                </button>
-                {categories.map((c) => (
+                <div style={styles.categoriesContainer}>
                   <button
-                    key={c.id}
-                    onClick={() => setSelectedCategoryId(c.id)}
+                    onClick={() => setSelectedCategoryId('all')}
                     style={{
                       ...styles.categoryTab,
-                      backgroundColor: selectedCategoryId === c.id ? 'var(--primary)' : 'var(--bg-surface-elevated)',
-                      color: selectedCategoryId === c.id ? '#fff' : 'var(--text-main)',
+                      padding: isMobile ? '10px 16px' : '8px 14px',
+                      backgroundColor: selectedCategoryId === 'all' ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                      color: selectedCategoryId === 'all' ? '#fff' : 'var(--text-main)',
                     }}
                   >
-                    {c.name}
+                    All Items
                   </button>
-                ))}
-              </div>
+                  {categories.map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => setSelectedCategoryId(c.id)}
+                      style={{
+                        ...styles.categoryTab,
+                        padding: isMobile ? '10px 16px' : '8px 14px',
+                        backgroundColor: selectedCategoryId === c.id ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                        color: selectedCategoryId === c.id ? '#fff' : 'var(--text-main)',
+                      }}
+                    >
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
 
-              <div style={styles.menuGridContainer}>
-                {filteredMenuItems.length === 0 ? (
-                  <div style={styles.emptyState}>No items match your search.</div>
-                ) : (
-                  <div style={{ ...styles.menuItemsGrid, gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
-                    {filteredMenuItems.map((item) => {
-                      const isSelected = selectedItemsMap[item.id] !== undefined;
-                      return (
-                        <div 
-                          key={item.id} 
-                          onClick={() => toggleItemSelection(item)}
-                          style={{
-                            ...styles.menuItemCard,
-                            border: isSelected ? '2px solid var(--primary)' : '1px solid var(--border-color)',
-                            backgroundColor: isSelected ? 'rgba(245, 158, 11, 0.03)' : 'var(--bg-surface)',
-                            position: 'relative',
-                            display: 'flex',
-                            flexDirection: 'column',
-                            justifyContent: 'space-between',
-                            height: '100%',
-                            cursor: 'pointer'
-                          }}
-                          className="glow-hover"
-                        >
-                          <div>
-                            <div style={{
-                              position: 'absolute',
-                              top: '8px',
-                              right: '8px',
-                              zIndex: 10,
-                              width: '20px',
-                              height: '20px',
-                              borderRadius: '4px',
-                              border: '2px solid ' + (isSelected ? 'var(--primary)' : 'var(--border-color)'),
-                              backgroundColor: isSelected ? 'var(--primary)' : 'rgba(0, 0, 0, 0.3)',
+                <div style={styles.menuGridContainer}>
+                  {filteredMenuItems.length === 0 ? (
+                    <div style={styles.emptyState}>No items match your search.</div>
+                  ) : (
+                    <div style={{ ...styles.menuItemsGrid, gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))' }}>
+                      {filteredMenuItems.map((item) => {
+                        const isSelected = selectedItemsMap[item.id] !== undefined;
+                        return (
+                          <div 
+                            key={item.id} 
+                            onClick={() => toggleItemSelection(item)}
+                            style={{
+                              ...styles.menuItemCard,
+                              border: isSelected ? '2px solid var(--primary)' : '1px solid var(--border-color)',
+                              backgroundColor: isSelected ? 'rgba(245, 158, 11, 0.03)' : 'var(--bg-surface)',
+                              position: 'relative',
                               display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              transition: 'var(--transition-fast)'
-                            }}>
-                              {isSelected && <Check size={12} color="#fff" strokeWidth={3} />}
-                            </div>
-
-                            {item.image_url ? (
-                              <img src={item.image_url} alt={item.name} style={styles.itemImg} />
-                            ) : (
-                              <div style={styles.itemNoImg}>
-                                <Image size={20} color="var(--text-muted)" />
-                              </div>
-                            )}
-                            <div style={styles.itemInfo}>
-                              <h4 style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-main)', margin: '0 0 4px 0' }}>{item.name}</h4>
-                              <span style={styles.itemPrice}>Rs. {item.price}</span>
-                            </div>
-                          </div>
-
-                          {isSelected && (
-                            <div 
-                              style={{
+                              flexDirection: 'column',
+                              justifyContent: 'space-between',
+                              height: '100%',
+                              cursor: 'pointer'
+                            }}
+                            className="glow-hover"
+                          >
+                            <div>
+                              <div style={{
+                                position: 'absolute',
+                                top: '8px',
+                                right: '8px',
+                                zIndex: 10,
+                                width: '20px',
+                                height: '20px',
+                                borderRadius: '4px',
+                                border: '2px solid ' + (isSelected ? 'var(--primary)' : 'var(--border-color)'),
+                                backgroundColor: isSelected ? 'var(--primary)' : 'rgba(0, 0, 0, 0.3)',
                                 display: 'flex',
                                 alignItems: 'center',
-                                justifyContent: 'space-between',
-                                padding: '6px 12px',
-                                borderTop: '1px solid var(--border-color)',
-                                backgroundColor: 'var(--bg-surface-elevated)',
-                                gap: '8px',
-                                borderBottomLeftRadius: 'var(--radius-sm)',
-                                borderBottomRightRadius: 'var(--radius-sm)'
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', justifyContent: 'space-between' }}>
-                                <button 
-                                  onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] - 1)}
-                                  style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    width: '20px',
-                                    height: '20px',
-                                    borderRadius: '50%',
-                                    border: '1px solid var(--border-color)',
-                                    backgroundColor: 'var(--bg-surface)',
-                                    color: 'var(--text-main)',
-                                    cursor: 'pointer'
-                                  }}
-                                >
-                                  <Minus size={10} />
-                                </button>
-                                <span style={{ fontSize: '12px', fontWeight: '700' }}>
-                                  {selectedItemsMap[item.id]}
-                                </span>
-                                <button 
-                                  onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] + 1)}
-                                  style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    width: '20px',
-                                    height: '20px',
-                                    borderRadius: '50%',
-                                    border: '1px solid var(--border-color)',
-                                    backgroundColor: 'var(--bg-surface)',
-                                    color: 'var(--text-main)',
-                                    cursor: 'pointer'
-                                  }}
-                                >
-                                  <Plus size={10} />
-                                </button>
+                                justifyContent: 'center',
+                                transition: 'var(--transition-fast)'
+                              }}>
+                                {isSelected && <Check size={12} color="#fff" strokeWidth={3} />}
+                              </div>
+
+                              {item.image_url ? (
+                                <img src={item.image_url} alt={item.name} style={styles.itemImg} />
+                              ) : (
+                                <div style={styles.itemNoImg}>
+                                  <Image size={20} color="var(--text-muted)" />
+                                </div>
+                              )}
+                              <div style={styles.itemInfo}>
+                                <h4 style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-main)', margin: '0 0 4px 0' }}>{item.name}</h4>
+                                <span style={styles.itemPrice}>Rs. {item.price}</span>
                               </div>
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+
+                            {isSelected && (
+                              <div 
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'space-between',
+                                  padding: '6px 12px',
+                                  borderTop: '1px solid var(--border-color)',
+                                  backgroundColor: 'var(--bg-surface-elevated)',
+                                  gap: '8px',
+                                  borderBottomLeftRadius: 'var(--radius-sm)',
+                                  borderBottomRightRadius: 'var(--radius-sm)'
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', justifyContent: 'space-between' }}>
+                                  <button 
+                                    onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] - 1)}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      width: isMobile ? '28px' : '20px',
+                                      height: isMobile ? '28px' : '20px',
+                                      borderRadius: '50%',
+                                      border: '1px solid var(--border-color)',
+                                      backgroundColor: 'var(--bg-surface)',
+                                      color: 'var(--text-main)',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    <Minus size={isMobile ? 12 : 10} />
+                                  </button>
+                                  <span style={{ fontSize: '12px', fontWeight: '700' }}>
+                                    {selectedItemsMap[item.id]}
+                                  </span>
+                                  <button 
+                                    onClick={() => updateSelectionQty(item.id, selectedItemsMap[item.id] + 1)}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      width: isMobile ? '28px' : '20px',
+                                      height: isMobile ? '28px' : '20px',
+                                      borderRadius: '50%',
+                                      border: '1px solid var(--border-color)',
+                                      backgroundColor: 'var(--bg-surface)',
+                                      color: 'var(--text-main)',
+                                      cursor: 'pointer'
+                                    }}
+                                  >
+                                    <Plus size={isMobile ? 12 : 10} />
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div style={styles.mobileBottomBar}>
@@ -905,155 +874,226 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                   </>
                 )}
               </div>
-            </div>
+            </>
           )}
 
-          {currentStep === 3 && selectedTable && activeOrder && (
-            <div style={{ ...styles.panel, padding: '16px' }} className="glass">
-              <div style={styles.cartContainer}>
-                <div style={styles.cartHeader}>
-                  <div>
-                    <h2 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', color: 'var(--text-main)' }}>Table {selectedTable.table_number} Order</h2>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Status: {activeOrder.status.toUpperCase()}</span>
-                  </div>
-                </div>
-
-                <div style={styles.cartItemsList}>
-                  {confirmedItems.length === 0 && cart.length === 0 ? (
-                    <div style={styles.emptyCart}>
-                      <ShoppingCart size={32} color="var(--border-color)" style={{ marginBottom: 8 }} />
-                      <p>Your order card is empty.</p>
-                      <p style={{ fontSize: '12px' }}>Go back to menu to add.</p>
+          {currentStep === 3 && selectedTable && (
+            <>
+              <div style={{ 
+                ...styles.panel, 
+                padding: '12px', 
+                display: 'flex',
+                flexDirection: 'column',
+                height: 'calc(100dvh - 150px)',
+                minHeight: '400px',
+                position: 'relative'
+              }} className="glass">
+                <div style={styles.cartContainer}>
+                  <div style={styles.cartHeader}>
+                    <div>
+                      <h2 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', color: 'var(--text-main)' }}>Table {selectedTable.table_number} Order</h2>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Status: {activeOrder ? activeOrder.status.toUpperCase() : 'NEW DRAFT'}</span>
                     </div>
-                  ) : (
-                    <>
-                      {confirmedItems.map((item) => (
-                        <div key={item.id} style={{ ...styles.cartItemRow, opacity: 0.85, backgroundColor: 'rgba(16, 185, 129, 0.02)', borderLeft: '3px solid var(--success)' }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={styles.cartItemName}>
-                              {item.item_name}
-                              <span style={{
-                                marginLeft: 8,
-                                fontSize: '9px',
-                                backgroundColor: 'rgba(16, 185, 129, 0.12)',
-                                color: 'var(--success)',
-                                padding: '2px 6px',
-                                borderRadius: 'var(--radius-full)',
-                                fontWeight: '700'
-                              }}>COOKING</span>
-                            </div>
-                            <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
-                            {item.notes && <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>* {item.notes}</div>}
-                          </div>
-                          <div style={styles.cartItemQuantityArea}>
-                            <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginRight: '12px' }}>Qty: {item.quantity}</span>
-                            <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
-                          </div>
-                        </div>
-                      ))}
+                  </div>
 
-                      {cart.map((item) => (
-                        <div key={item.id} style={{ ...styles.cartItemRow, borderLeft: '3px solid var(--primary)', backgroundColor: 'rgba(245, 158, 11, 0.01)' }}>
-                          <div style={{ flex: 1 }}>
-                            <div style={styles.cartItemName}>
-                              {item.item_name}
-                              <span style={{
-                                marginLeft: 8,
-                                fontSize: '9px',
-                                backgroundColor: 'rgba(245, 158, 11, 0.12)',
-                                color: 'var(--primary)',
-                                padding: '2px 6px',
-                                borderRadius: 'var(--radius-full)',
-                                fontWeight: '700'
-                              }}>NEW</span>
+                  <div style={styles.cartItemsList}>
+                    {confirmedItems.length === 0 && cart.length === 0 ? (
+                      <div style={styles.emptyCart}>
+                        <ShoppingCart size={32} color="var(--border-color)" style={{ marginBottom: 8 }} />
+                        <p>Your order card is empty.</p>
+                        <p style={{ fontSize: '12px' }}>Go back to menu to add.</p>
+                      </div>
+                    ) : (
+                      <>
+                        {confirmedItems.map((item) => (
+                          <div key={item.id} style={{ ...styles.cartItemRow, opacity: 0.85, backgroundColor: 'rgba(16, 185, 129, 0.02)', borderLeft: '3px solid var(--success)' }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={styles.cartItemName}>
+                                {item.item_name}
+                                <span style={{
+                                  marginLeft: 8,
+                                  fontSize: '9px',
+                                  backgroundColor: 'rgba(16, 185, 129, 0.12)',
+                                  color: 'var(--success)',
+                                  padding: '2px 6px',
+                                  borderRadius: 'var(--radius-full)',
+                                  fontWeight: '700'
+                                }}>COOKING</span>
+                              </div>
+                              <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
+                              {item.notes && <div style={{ fontSize: '11px', color: 'var(--text-muted)', fontStyle: 'italic', marginTop: '4px' }}>* {item.notes}</div>}
                             </div>
-                            <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
-                            
-                            <input
-                              type="text"
-                              placeholder="Instructions (e.g. no spicy)"
-                              value={item.notes || ''}
-                              onChange={(e) => handleItemNotesChange(item.id, e.target.value)}
-                              style={styles.itemNoteInput}
-                            />
+                            <div style={styles.cartItemQuantityArea}>
+                              <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginRight: '12px' }}>Qty: {item.quantity}</span>
+                              <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
+                            </div>
                           </div>
+                        ))}
 
-                          <div style={styles.cartItemQuantityArea}>
-                            <div style={styles.qtyControls}>
-                              <button 
-                                onClick={() => handleUpdateQty(item.id, item.quantity - 1)}
-                                style={styles.cartQtyBtn}
+                        {cart.map((item) => (
+                          <div key={item.id} style={{ ...styles.cartItemRow, borderLeft: '3px solid var(--primary)', backgroundColor: 'rgba(245, 158, 11, 0.01)' }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={styles.cartItemName}>
+                                {item.item_name}
+                                <span style={{
+                                  marginLeft: 8,
+                                  fontSize: '9px',
+                                  backgroundColor: 'rgba(245, 158, 11, 0.12)',
+                                  color: 'var(--primary)',
+                                  padding: '2px 6px',
+                                  borderRadius: 'var(--radius-full)',
+                                  fontWeight: '700'
+                                }}>NEW</span>
+                              </div>
+                              <div style={styles.cartItemPrice}>Rs. {item.price_at_order} each</div>
+                              
+                              <input
+                                type="text"
+                                placeholder="Instructions (e.g. no spicy)"
+                                value={item.notes || ''}
+                                onChange={(e) => handleItemNotesChange(item.id, e.target.value)}
+                                style={styles.itemNoteInput}
+                              />
+                            </div>
+
+                            <div style={styles.cartItemQuantityArea}>
+                              <div style={styles.qtyControls}>
+                                <button 
+                                  onClick={() => handleUpdateQty(item.id, item.quantity - 1)}
+                                  style={{
+                                    ...styles.cartQtyBtn,
+                                    width: isMobile ? '32px' : '22px',
+                                    height: isMobile ? '32px' : '22px',
+                                  }}
+                                >
+                                  <Minus size={isMobile ? 14 : 12} />
+                                </button>
+                                <span style={{ width: '20px', textAlign: 'center', fontSize: '14px', fontWeight: '600' }}>
+                                  {item.quantity}
+                                </span>
+                                <button 
+                                  onClick={() => handleUpdateQty(item.id, item.quantity + 1)}
+                                  style={{
+                                    ...styles.cartQtyBtn,
+                                    width: isMobile ? '32px' : '22px',
+                                    height: isMobile ? '32px' : '22px',
+                                  }}
+                                >
+                                  <Plus size={isMobile ? 14 : 12} />
+                                </button>
+                              </div>
+                              <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
+                              <button
+                                onClick={() => handleRemoveFromCart(item.id)}
+                                style={{
+                                  ...styles.cartDeleteBtn,
+                                  padding: isMobile ? '8px' : '0px',
+                                }}
                               >
-                                <Minus size={12} />
-                              </button>
-                              <span style={{ width: '20px', textAlign: 'center', fontSize: '14px', fontWeight: '600' }}>
-                                {item.quantity}
-                              </span>
-                              <button 
-                                onClick={() => handleUpdateQty(item.id, item.quantity + 1)}
-                                style={styles.cartQtyBtn}
-                              >
-                                <Plus size={12} />
+                                <Trash2 size={isMobile ? 18 : 14} />
                               </button>
                             </div>
-                            <span style={styles.cartItemTotal}>Rs. {item.price_at_order * item.quantity}</span>
-                            <button
-                              onClick={() => handleRemoveFromCart(item.id)}
-                              style={styles.cartDeleteBtn}
-                            >
-                              <Trash2 size={14} />
-                            </button>
                           </div>
-                        </div>
-                      ))}
-                    </>
+                        ))}
+                      </>
+                    )}
+                  </div>
+
+                  {isMobile && (
+                    <div style={{ marginBottom: 8, flexShrink: 0 }}>
+                      <label style={styles.label}>General Order Notes</label>
+                      <textarea
+                        placeholder="e.g. Serve dessert at the end"
+                        value={orderNotes}
+                        onChange={(e) => setOrderNotes(e.target.value)}
+                        rows={2}
+                        style={{ width: '100%', marginTop: '4px', fontSize: '13px' }}
+                      />
+                    </div>
+                  )}
+
+                  {!isMobile && (
+                    <div style={styles.cartSummary}>
+                      <div style={{ marginBottom: 16 }}>
+                        <label style={styles.label}>General Order Notes</label>
+                        <textarea
+                          placeholder="e.g. Serve dessert at the end"
+                          value={orderNotes}
+                          onChange={(e) => setOrderNotes(e.target.value)}
+                          rows={2}
+                          style={{ width: '100%', marginTop: '6px', fontSize: '13px' }}
+                        />
+                      </div>
+
+                      <div style={styles.subtotalRow}>
+                        <span>Total Bill Amount:</span>
+                        <strong style={{ fontSize: '20px', color: 'var(--primary)' }}>
+                          Rs. {confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0) + cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}
+                        </strong>
+                      </div>
+
+                      <div style={{ ...styles.actionBtnRow, gridTemplateColumns: '1fr 1.2fr 1.5fr' }}>
+                        <button
+                          onClick={() => setCurrentStep(2)}
+                          style={styles.saveDraftBtn}
+                        >
+                          Back
+                        </button>
+                        <button
+                          onClick={() => handleSubmitOrder(false)}
+                          disabled={loading || cart.length === 0}
+                          style={styles.saveDraftBtn}
+                        >
+                          Save Draft
+                        </button>
+                        <button
+                          onClick={() => handleSubmitOrder(true)}
+                          disabled={loading || cart.length === 0}
+                          style={styles.confirmBtn}
+                        >
+                          {loading ? 'Sending...' : 'Kitchen Send'}
+                        </button>
+                      </div>
+                    </div>
                   )}
                 </div>
+              </div>
 
-                <div style={styles.cartSummary}>
-                  <div style={{ marginBottom: 16 }}>
-                    <label style={styles.label}>General Order Notes</label>
-                    <textarea
-                      placeholder="e.g. Serve dessert at the end"
-                      value={orderNotes}
-                      onChange={(e) => setOrderNotes(e.target.value)}
-                      rows={2}
-                      style={{ width: '100%', marginTop: '6px', fontSize: '13px' }}
-                    />
-                  </div>
-
-                  <div style={styles.subtotalRow}>
-                    <span>Total Bill Amount:</span>
-                    <strong style={{ fontSize: '20px', color: 'var(--primary)' }}>
-                      Rs. {confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0) + cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}
-                    </strong>
-                  </div>
-
-                  <div style={{ ...styles.actionBtnRow, gridTemplateColumns: '1fr 1.2fr 1.5fr' }}>
-                    <button
-                      onClick={() => setCurrentStep(2)}
-                      style={styles.saveDraftBtn}
-                    >
-                      Back
-                    </button>
-                    <button
-                      onClick={() => handleSubmitOrder(false)}
-                      disabled={loading || cart.length === 0}
-                      style={styles.saveDraftBtn}
-                    >
-                      Save Draft
-                    </button>
-                    <button
-                      onClick={() => handleSubmitOrder(true)}
-                      disabled={loading || cart.length === 0}
-                      style={styles.confirmBtn}
-                    >
-                      {loading ? 'Sending...' : 'Kitchen Send'}
-                    </button>
+              {isMobile && (
+                <div style={styles.mobileBottomBar}>
+                  <div style={{ display: 'flex', flexDirection: 'column', width: '100%', gap: '8px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Total Bill Amount:</span>
+                      <strong style={{ fontSize: '16px', color: 'var(--primary)' }}>
+                        Rs. {confirmedItems.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0) + cart.reduce((sum, item) => sum + (item.price_at_order * item.quantity), 0)}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.2fr', gap: '8px', width: '100%' }}>
+                      <button
+                        onClick={() => setCurrentStep(2)}
+                        style={{ ...styles.backBtn, padding: '10px', fontSize: '12px' }}
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={() => handleSubmitOrder(false)}
+                        disabled={loading || cart.length === 0}
+                        style={{ ...styles.backBtn, padding: '10px', fontSize: '12px', opacity: cart.length === 0 ? 0.5 : 1 }}
+                      >
+                        Save Draft
+                      </button>
+                      <button
+                        onClick={() => handleSubmitOrder(true)}
+                        disabled={loading || cart.length === 0}
+                        style={{ ...styles.nextBtn, padding: '10px', fontSize: '12px', opacity: (loading || cart.length === 0) ? 0.5 : 1 }}
+                      >
+                        {loading ? 'Sending...' : 'Kitchen Send'}
+                      </button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
+              )}
+            </>
           )}
         </div>
       ) : (
@@ -1290,12 +1330,12 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                 !isOrdering ? (
                   renderTableDetails()
                 ) : (
-                  activeOrder ? (
+                  (activeOrder || isOrdering) ? (
                     <div style={styles.cartContainer}>
                       <div style={styles.cartHeader}>
                         <div>
                           <h2 style={{ fontSize: '20px', fontFamily: 'var(--font-serif)', color: 'var(--text-main)' }}>Table {selectedTable.table_number} Order</h2>
-                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Status: {activeOrder.status.toUpperCase()}</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Status: {activeOrder ? activeOrder.status.toUpperCase() : 'NEW DRAFT'}</span>
                         </div>
                       </div>
 

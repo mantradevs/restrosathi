@@ -56,6 +56,7 @@ export default function OwnerDashboard({ user }: OwnerDashboardProps) {
   const [itemCategory, setItemCategory] = useState('');
   const [itemDescription, setItemDescription] = useState('');
   const [editingMenuItemId, setEditingMenuItemId] = useState<string | null>(null);
+  const [orderQueueFilter, setOrderQueueFilter] = useState<'pending' | 'confirmed' | 'cancelled'>('pending');
 
   // Order Details / Edit Modal State
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -815,6 +816,8 @@ export default function OwnerDashboard({ user }: OwnerDashboardProps) {
     }, 200);
   };
 
+  const filteredOrders = orders.filter(o => o.status === orderQueueFilter);
+
   return (
     <div style={styles.container}>
       {/* Toast Alert */}
@@ -985,11 +988,52 @@ export default function OwnerDashboard({ user }: OwnerDashboardProps) {
                 </button>
               </div>
 
-              {orders.length === 0 ? (
-                <div style={styles.emptyState}>No orders placed yet.</div>
+              {/* Order Status Tabs */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '14px', flexWrap: 'wrap' }}>
+                {(['pending', 'confirmed', 'cancelled'] as const).map((status) => {
+                  const count = orders.filter(o => o.status === status).length;
+                  return (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => setOrderQueueFilter(status)}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: 'var(--radius-full)',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        backgroundColor: orderQueueFilter === status ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                        color: orderQueueFilter === status ? '#fff' : 'var(--text-muted)',
+                        textTransform: 'capitalize',
+                        transition: 'var(--transition-fast)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      {status}
+                      <span style={{
+                        fontSize: '10px',
+                        backgroundColor: orderQueueFilter === status ? 'rgba(255,255,255,0.2)' : 'var(--bg-surface)',
+                        color: orderQueueFilter === status ? '#fff' : 'var(--text-main)',
+                        padding: '2px 6px',
+                        borderRadius: 'var(--radius-full)',
+                        fontWeight: '700'
+                      }}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {filteredOrders.length === 0 ? (
+                <div style={styles.emptyState}>No {orderQueueFilter} orders.</div>
               ) : (
                 <div style={styles.orderListContainer}>
-                  {orders.map((o) => (
+                  {filteredOrders.map((o) => (
                     <div 
                       key={o.id} 
                       onClick={() => handleViewOrder(o)}

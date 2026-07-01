@@ -4,9 +4,11 @@ import React, { useState, useEffect } from 'react';
 import { getSupabaseClient } from '@/lib/supabase';
 import { 
   Plus, Edit2, Trash2, Check, RefreshCw, ShoppingBag, 
-  Layers, Users, Calendar, DollarSign, Eye, XCircle, Info, Image, Clipboard, Settings
+  Layers, Users, Calendar, DollarSign, Eye, XCircle, Info, Image, Clipboard, Settings,
+  ShoppingCart
 } from 'lucide-react';
 import KotPrintView, { BillPreviewModal } from './KotPrintView';
+import StaffDashboard from './StaffDashboard';
 
 interface AdminDashboardProps {
   user: { id: string; username: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -14,7 +16,7 @@ interface AdminDashboardProps {
 
 export default function AdminDashboard({ user }: AdminDashboardProps) {
   // Navigation tabs
-  const [activeTab, setActiveTab] = useState<'orders' | 'tables' | 'menu' | 'staff' | 'kot'>('orders');
+  const [activeTab, setActiveTab] = useState<'orders' | 'tables' | 'menu' | 'staff' | 'kot' | 'pos'>('orders');
 
   // Common Loading & Error States
   const [loading, setLoading] = useState(false);
@@ -55,6 +57,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [itemCategory, setItemCategory] = useState('');
   const [itemDescription, setItemDescription] = useState('');
   const [editingMenuItemId, setEditingMenuItemId] = useState<string | null>(null);
+  const [selectedCreatorCategory, setSelectedCreatorCategory] = useState<string>('all');
+  const [orderQueueFilter, setOrderQueueFilter] = useState<'pending' | 'confirmed' | 'cancelled'>('pending');
 
   // Order Details / Edit Modal State
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -318,6 +322,59 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   };
 
   // Category & Menu Management Actions
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('Image size should be less than 10MB', false);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      if (typeof reader.result === 'string') {
+        const img = window.document.createElement('img');
+        img.src = reader.result;
+        img.onload = () => {
+          const canvas = window.document.createElement('canvas');
+          const MAX_WIDTH = 500;
+          const MAX_HEIGHT = 500;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0, width, height);
+            const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
+            setItemImage(compressedBase64);
+            showToast('Image loaded and compressed successfully');
+          } else {
+            setItemImage(reader.result as string);
+            showToast('Image loaded successfully');
+          }
+        };
+      }
+    };
+    reader.readAsDataURL(file);
+    // Reset file input value to allow selecting the same file again
+    e.target.value = '';
+  };
+
   const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!supabase || !newCategoryName) return;
@@ -885,6 +942,12 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
     }, 200);
   };
 
+  const filteredMenuItems = selectedCreatorCategory === 'all'
+    ? menuItems
+    : menuItems.filter(item => item.category_id === selectedCreatorCategory);
+
+  const filteredOrders = orders.filter(o => o.status === orderQueueFilter);
+
   return (
     <div style={styles.container}>
       {/* Toast Messages */}
@@ -916,6 +979,17 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
         >
           <ShoppingBag size={18} />
           Active Orders
+        </button>
+        <button 
+          onClick={() => setActiveTab('pos')}
+          style={{
+            ...styles.tabButton, 
+            color: activeTab === 'pos' ? 'var(--primary)' : 'var(--text-muted)',
+            borderBottom: activeTab === 'pos' ? '2px solid var(--primary)' : 'none',
+          }}
+        >
+          <ShoppingCart size={18} />
+          Take Order (POS)
         </button>
         <button 
           onClick={() => setActiveTab('tables')}
@@ -976,11 +1050,52 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                 </button>
               </div>
 
-              {orders.length === 0 ? (
-                <div style={styles.emptyState}>No orders placed yet.</div>
+              {/* Order Status Tabs */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '14px', flexWrap: 'wrap' }}>
+                {(['pending', 'confirmed', 'cancelled'] as const).map((status) => {
+                  const count = orders.filter(o => o.status === status).length;
+                  return (
+                    <button
+                      key={status}
+                      type="button"
+                      onClick={() => setOrderQueueFilter(status)}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: 'var(--radius-full)',
+                        border: '1px solid var(--border-color)',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        backgroundColor: orderQueueFilter === status ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                        color: orderQueueFilter === status ? '#fff' : 'var(--text-muted)',
+                        textTransform: 'capitalize',
+                        transition: 'var(--transition-fast)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                    >
+                      {status}
+                      <span style={{
+                        fontSize: '10px',
+                        backgroundColor: orderQueueFilter === status ? 'rgba(255,255,255,0.2)' : 'var(--bg-surface)',
+                        color: orderQueueFilter === status ? '#fff' : 'var(--text-main)',
+                        padding: '2px 6px',
+                        borderRadius: 'var(--radius-full)',
+                        fontWeight: '700'
+                      }}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {filteredOrders.length === 0 ? (
+                <div style={styles.emptyState}>No {orderQueueFilter} orders.</div>
               ) : (
                 <div style={styles.orderListContainer}>
-                  {orders.map((o) => (
+                  {filteredOrders.map((o) => (
                     <div 
                       key={o.id} 
                       onClick={() => handleViewOrder(o)}
@@ -1416,6 +1531,13 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
           </div>
         )}
 
+        {/* POS TAB */}
+        {activeTab === 'pos' && (
+          <div style={{ width: '100%' }}>
+            <StaffDashboard user={user} />
+          </div>
+        )}
+
         {/* TABLES TAB */}
         {activeTab === 'tables' && (
           <div className="responsive-two-column">
@@ -1561,13 +1683,62 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                   </div>
 
                   <div style={styles.inputGroup}>
-                    <label style={styles.label}>Image URL (Optional)</label>
-                    <input
-                      type="text"
-                      placeholder="https://images.unsplash.com/photo-..."
-                      value={itemImage}
-                      onChange={(e) => setItemImage(e.target.value)}
-                    />
+                    <label style={styles.label}>Item Image (URL or Upload)</label>
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <input
+                        type="text"
+                        placeholder="https://images.unsplash.com/photo-... or data:image..."
+                        value={itemImage}
+                        onChange={(e) => setItemImage(e.target.value)}
+                        style={{ flex: 1, minWidth: '200px' }}
+                      />
+                      <label style={{
+                        padding: '10px 14px',
+                        backgroundColor: 'var(--bg-surface-elevated)',
+                        border: '1px solid var(--border-color)',
+                        borderRadius: 'var(--radius-sm)',
+                        cursor: 'pointer',
+                        fontSize: '13px',
+                        fontWeight: '500',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        color: 'var(--text-main)',
+                      }}>
+                        <Image size={16} color="var(--primary)" />
+                        Upload
+                        <input 
+                          type="file" 
+                          accept="image/*" 
+                          onChange={handleImageUpload} 
+                          style={{ display: 'none' }} 
+                        />
+                      </label>
+                    </div>
+                    {itemImage && (
+                      <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <img 
+                          src={itemImage} 
+                          alt="Preview" 
+                          style={{ width: '50px', height: '50px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} 
+                        />
+                        <button 
+                          type="button" 
+                          onClick={() => setItemImage('')} 
+                          style={{
+                            padding: '4px 8px',
+                            backgroundColor: 'transparent',
+                            color: 'var(--danger)',
+                            border: '1px solid var(--danger)',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Remove Image
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <div style={styles.inputGroup}>
@@ -1608,11 +1779,53 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             {/* Menu Items List */}
             <div style={styles.panel} className="glass">
               <h2 style={styles.panelTitle}>Menu Offerings</h2>
-              {menuItems.length === 0 ? (
-                <div style={styles.emptyState}>No menu items created yet.</div>
+              
+              {/* Category Filter for Menu Creator */}
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '14px' }}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedCreatorCategory('all')}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: 'var(--radius-full)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    backgroundColor: selectedCreatorCategory === 'all' ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                    color: selectedCreatorCategory === 'all' ? '#fff' : 'var(--text-muted)',
+                    transition: 'var(--transition-fast)',
+                  }}
+                >
+                  All Items
+                </button>
+                {categories.map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setSelectedCreatorCategory(c.id)}
+                    style={{
+                      padding: '6px 14px',
+                      borderRadius: 'var(--radius-full)',
+                      border: '1px solid var(--border-color)',
+                      fontSize: '12px',
+                      fontWeight: '600',
+                      cursor: 'pointer',
+                      backgroundColor: selectedCreatorCategory === c.id ? 'var(--primary)' : 'var(--bg-surface-elevated)',
+                      color: selectedCreatorCategory === c.id ? '#fff' : 'var(--text-muted)',
+                      transition: 'var(--transition-fast)',
+                    }}
+                  >
+                    {c.name}
+                  </button>
+                ))}
+              </div>
+
+              {filteredMenuItems.length === 0 ? (
+                <div style={styles.emptyState}>No menu items found in this category.</div>
               ) : (
                 <div style={styles.menuItemsListGrid}>
-                  {menuItems.map((item) => (
+                  {filteredMenuItems.map((item) => (
                     <div key={item.id} style={styles.menuCard}>
                       {item.image_url ? (
                         <img src={item.image_url} alt={item.name} style={styles.menuCardImg} />
