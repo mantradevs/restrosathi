@@ -1,6 +1,7 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 
 interface OrderItem {
   id: string;
@@ -46,6 +47,11 @@ const defaultSettings: KotSettings = {
 };
 
 export default function KotPrintView({ order, items, tableNumber, settings = defaultSettings, previewMode = false, allOrders }: KotPrintViewProps) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   const activeSettings = settings || defaultSettings;
 
   // Consolidated mode: show all orders in one bill
@@ -94,7 +100,7 @@ export default function KotPrintView({ order, items, tableNumber, settings = def
     }
   }
 
-  return (
+  const content = (
     <div className="kot-print-area" style={containerStyle}>
       {/* Header */}
       <div style={printStyles.header}>
@@ -251,6 +257,16 @@ export default function KotPrintView({ order, items, tableNumber, settings = def
       </div>
     </div>
   );
+
+  if (previewMode) {
+    return content;
+  }
+
+  if (!mounted || typeof window === 'undefined') {
+    return null;
+  }
+
+  return createPortal(content, document.body);
 }
 
 /** Bill Preview Modal: wraps KotPrintView in a visible on-screen overlay */
@@ -299,20 +315,20 @@ const printStyles: Record<string, React.CSSProperties> = {
     marginBottom: '8px',
   },
   restaurantName: {
-    fontSize: '18px',
+    fontSize: '24px',
     fontWeight: '800',
     margin: '0 0 2px 0',
     letterSpacing: '0.5px',
   },
   title: {
-    fontSize: '11px',
+    fontSize: '15px',
     fontWeight: 'bold',
     margin: 0,
     letterSpacing: '1px',
     opacity: 0.8,
   },
   tableNo: {
-    fontSize: '24px',
+    fontSize: '32px',
     fontWeight: '900',
     margin: '8px 0 0 0',
     border: '2px solid #000',
@@ -327,13 +343,13 @@ const printStyles: Record<string, React.CSSProperties> = {
     display: 'grid',
     gridTemplateColumns: '1fr',
     gap: '2px',
-    fontSize: '11px',
+    fontSize: '15px',
   },
   table: {
     width: '100%',
     borderCollapse: 'collapse',
     marginTop: '6px',
-    fontSize: '12px',
+    fontSize: '16px',
   },
   tableHeaderRow: {
     borderBottom: '1px dashed #000',
@@ -341,7 +357,7 @@ const printStyles: Record<string, React.CSSProperties> = {
   th: {
     padding: '4px 0',
     fontWeight: 'bold',
-    fontSize: '11px',
+    fontSize: '15px',
   },
   qtyCol: {
     padding: '6px 0',
@@ -359,21 +375,21 @@ const printStyles: Record<string, React.CSSProperties> = {
   },
   itemNotes: {
     padding: '0 0 6px 0',
-    fontSize: '10px',
+    fontSize: '13px',
     fontStyle: 'italic',
     color: '#000',
   },
   subtotalRow: {
     display: 'flex',
     justifyContent: 'space-between',
-    fontSize: '11px',
+    fontSize: '15px',
     margin: '4px 0',
     paddingTop: '4px',
   },
   totalRow: {
     display: 'flex',
     justifyContent: 'space-between',
-    fontSize: '14px',
+    fontSize: '20px',
     fontWeight: 'bold',
     margin: '8px 0',
     padding: '6px 0',
@@ -381,13 +397,13 @@ const printStyles: Record<string, React.CSSProperties> = {
     borderBottom: '2px solid #000',
   },
   orderNotes: {
-    fontSize: '11px',
+    fontSize: '15px',
     marginTop: '6px',
   },
   footer: {
     textAlign: 'center',
     marginTop: '12px',
-    fontSize: '11px',
+    fontSize: '15px',
   },
 };
 
@@ -439,12 +455,12 @@ const modalStyles: Record<string, React.CSSProperties> = {
     backgroundColor: '#fff',
     border: '1px solid #ddd',
     borderRadius: '4px',
-    padding: '16px 12px',
+    padding: '16px 24px 16px 12px',
     fontFamily: "'Courier New', Courier, monospace",
-    fontSize: '12px',
+    fontSize: '15px',
     lineHeight: 1.4,
     color: '#000',
-    maxWidth: '300px',
+    maxWidth: '320px',
     margin: '0 auto',
     boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
   },

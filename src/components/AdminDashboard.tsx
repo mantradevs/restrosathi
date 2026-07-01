@@ -58,7 +58,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [itemDescription, setItemDescription] = useState('');
   const [editingMenuItemId, setEditingMenuItemId] = useState<string | null>(null);
   const [selectedCreatorCategory, setSelectedCreatorCategory] = useState<string>('all');
-  const [orderQueueFilter, setOrderQueueFilter] = useState<'pending' | 'confirmed' | 'cancelled'>('pending');
+  const [orderQueueFilter, setOrderQueueFilter] = useState<'pending' | 'confirmed' | 'completed' | 'cancelled'>('confirmed');
 
   // Order Details / Edit Modal State
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -1052,7 +1052,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
 
               {/* Order Status Tabs */}
               <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '14px', flexWrap: 'wrap' }}>
-                {(['pending', 'confirmed', 'cancelled'] as const).map((status) => {
+                {(['confirmed', 'pending', 'completed', 'cancelled'] as const).map((status) => {
                   const count = orders.filter(o => o.status === status).length;
                   return (
                     <button

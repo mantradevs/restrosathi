@@ -98,7 +98,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
     }
   };
 
-  const handleTableSelect = async (table: any) => {
+  const handleTableSelect = async (table: any, autoBeginOrder = false) => {
     if (!supabase) return;
     setSelectedTable(table);
     setCart([]);
@@ -108,8 +108,8 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
     setOrderNotes('');
     setSessionOrders([]);
     setPosRightTab('cart');
-    setIsOrdering(false);
-    setCurrentStep(1);
+    setIsOrdering(autoBeginOrder);
+    setCurrentStep(autoBeginOrder && isMobile ? 2 : 1);
 
     setLoading(true);
     try {
@@ -426,7 +426,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
       }
 
       // Reload/Refresh the table details to sync state
-      await handleTableSelect(selectedTable);
+      await handleTableSelect(selectedTable, isOrdering);
     } catch (err: any) {
       showToast(err.message || 'Error saving order details', false);
     } finally {
@@ -619,7 +619,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                   {tables.map((t) => (
                     <button
                       key={t.id}
-                      onClick={() => handleTableSelect(t)}
+                      onClick={() => handleTableSelect(t, true)}
                       style={{
                         ...styles.tableBtn,
                         padding: isMobile ? '16px 12px' : '12px 6px',
@@ -1106,7 +1106,7 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                   {tables.map((t) => (
                     <button
                       key={t.id}
-                      onClick={() => handleTableSelect(t)}
+                      onClick={() => handleTableSelect(t, true)}
                       style={{
                         ...styles.tableBtn,
                         borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
