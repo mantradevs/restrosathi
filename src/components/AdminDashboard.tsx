@@ -59,6 +59,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const [editingMenuItemId, setEditingMenuItemId] = useState<string | null>(null);
   const [selectedCreatorCategory, setSelectedCreatorCategory] = useState<string>('all');
   const [orderQueueFilter, setOrderQueueFilter] = useState<'pending' | 'confirmed' | 'completed' | 'cancelled'>('confirmed');
+  const [selectedOrderIds, setSelectedOrderIds] = useState<string[]>([]);
+  const [detailsLoading, setDetailsLoading] = useState(false);
 
   // Order Details / Edit Modal State
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
@@ -81,6 +83,10 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchKotSettings();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    setSelectedOrderIds([]);
+  }, [activeTab, orderQueueFilter]);
 
   const showToast = (message: string, isSuccess = true) => {
     if (isSuccess) {
@@ -199,6 +205,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       return;
     }
 
+    setLoading(true);
     try {
       if (editingStaffId) {
         // Update
@@ -233,6 +240,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchData();
     } catch (err: any) {
       showToast(err.message || 'Error saving staff member', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -245,6 +254,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
 
   const handleDeleteStaff = async (id: string) => {
     if (!supabase) return;
+    if (!window.confirm('Are you sure you want to delete this staff member?')) return;
+    setLoading(true);
     try {
       const { error: err } = await supabase
         .from('restaurant_users')
@@ -255,6 +266,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchData();
     } catch (err: any) {
       showToast(err.message || 'Error deleting staff member', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -268,6 +281,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       return;
     }
 
+    setLoading(true);
     try {
       if (editingTableId) {
         const { error: err } = await supabase
@@ -297,6 +311,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchData();
     } catch (err: any) {
       showToast(err.message || 'Error saving table', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -308,6 +324,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
 
   const handleDeleteTable = async (id: string) => {
     if (!supabase) return;
+    if (!window.confirm('Are you sure you want to delete this table?')) return;
+    setLoading(true);
     try {
       const { error: err } = await supabase
         .from('restaurant_tables')
@@ -318,6 +336,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchData();
     } catch (err: any) {
       showToast(err.message || 'Error deleting table', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -378,6 +398,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
   const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!supabase || !newCategoryName) return;
+    setLoading(true);
     try {
       const { error: err } = await supabase
         .from('menu_categories')
@@ -388,6 +409,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchData();
     } catch (err: any) {
       showToast(err.message || 'Error creating category', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -400,6 +423,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       return;
     }
 
+    setLoading(true);
     try {
       const priceVal = itemPrice ? parseFloat(itemPrice) : 0;
       const payload = {
@@ -434,6 +458,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchData();
     } catch (err: any) {
       showToast(err.message || 'Error saving menu item', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -448,6 +474,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
 
   const handleDeleteMenuItem = async (id: string) => {
     if (!supabase) return;
+    if (!window.confirm('Are you sure you want to delete this menu item?')) return;
+    setLoading(true);
     try {
       const { error: err } = await supabase
         .from('menu_items')
@@ -458,13 +486,17 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       fetchData();
     } catch (err: any) {
       showToast(err.message || 'Error deleting menu item', false);
+    } finally {
+      setLoading(false);
     }
   };
 
   // Order Operations
   const handleViewOrder = async (order: any) => {
     if (!supabase) return;
+    setDetailsLoading(true);
     setSelectedOrder(order);
+    setSelectedOrderItems([]); // Clear previous order items immediately
     
     // Parse notes for discount
     let dType: 'none' | 'percentage' | 'amount' = 'none';
@@ -497,6 +529,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       setSelectedOrderItems(data || []);
     } catch (err: any) {
       showToast(err.message || 'Error fetching order items', false);
+    } finally {
+      setDetailsLoading(false);
     }
   };
 
@@ -574,6 +608,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
 
   const handleConfirmOrder = async (orderId: string) => {
     if (!supabase) return;
+    setLoading(true);
     try {
       const { error: err } = await supabase
         .from('orders')
@@ -592,11 +627,14 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       }
     } catch (err: any) {
       showToast(err.message || 'Error confirming order', false);
+    } finally {
+      setLoading(false);
     }
   };
 
   const handleUpdateOrderStatus = async (orderId: string, newStatus: 'completed' | 'cancelled' | 'pending') => {
     if (!supabase) return;
+    setLoading(true);
     try {
       const orderToUpdate = orders.find(o => o.id === orderId);
       
@@ -653,6 +691,72 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
       setSelectedOrder(null);
     } catch (err: any) {
       showToast(err.message || 'Error updating order status', false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleBulkUpdateOrderStatus = async (orderIds: string[], newStatus: 'completed' | 'cancelled') => {
+    if (!supabase || orderIds.length === 0) return;
+    setLoading(true);
+    try {
+      const updatePayload: any = { status: newStatus };
+      if (newStatus === 'completed') {
+        updatePayload.payment_status = 'paid';
+      }
+
+      // 1. Perform bulk update of all selected orders
+      const { error: err } = await supabase
+        .from('orders')
+        .update(updatePayload)
+        .in('id', orderIds);
+      
+      if (err) throw err;
+
+      // 2. Resolve sessions and tables for the updated orders
+      const updatedOrders = orders.filter(o => orderIds.includes(o.id));
+      const sessionIds = Array.from(new Set(updatedOrders.map(o => o.session_id).filter(Boolean)));
+      const tableIdsWithoutSession = Array.from(new Set(updatedOrders.filter(o => !o.session_id).map(o => o.table_id).filter(Boolean)));
+
+      if (tableIdsWithoutSession.length > 0) {
+        await supabase
+          .from('restaurant_tables')
+          .update({ status: 'available' })
+          .in('id', tableIdsWithoutSession);
+      }
+
+      for (const sessId of sessionIds) {
+        const { data: sessionOrders } = await supabase
+          .from('orders')
+          .select('id, status, payment_status, table_id')
+          .eq('session_id', sessId);
+
+        const allSettled = sessionOrders?.every(
+          o => o.payment_status === 'paid' || o.status === 'cancelled'
+        );
+
+        if (allSettled && sessionOrders && sessionOrders.length > 0) {
+          const tableId = sessionOrders[0].table_id;
+          await supabase
+            .from('table_sessions')
+            .update({ status: 'closed', closed_at: new Date().toISOString(), closed_by: user.name })
+            .eq('id', sessId);
+
+          await supabase
+            .from('restaurant_tables')
+            .update({ status: 'available' })
+            .eq('id', tableId);
+        }
+      }
+
+      showToast(`Successfully updated ${orderIds.length} orders to ${newStatus}`);
+      setSelectedOrder(null);
+      setSelectedOrderIds([]);
+      fetchData();
+    } catch (err: any) {
+      showToast(err.message || 'Error updating orders', false);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -1094,50 +1198,145 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
               {filteredOrders.length === 0 ? (
                 <div style={styles.emptyState}>No {orderQueueFilter} orders.</div>
               ) : (
-                <div style={styles.orderListContainer}>
-                  {filteredOrders.map((o) => (
-                    <div 
-                      key={o.id} 
-                      onClick={() => handleViewOrder(o)}
-                      style={{
-                        ...styles.orderRow,
-                        borderColor: selectedOrder?.id === o.id ? 'var(--primary)' : 'var(--border-color)',
-                        backgroundColor: selectedOrder?.id === o.id ? 'var(--bg-surface-elevated)' : 'transparent',
-                      }}
-                    >
-                      <div style={styles.orderRowMeta}>
-                        <strong style={{ fontSize: '15px' }}>{o.restaurant_tables?.table_number || 'N/A'}</strong>
-                        <span style={styles.orderTime}>{new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <>
+                  {/* Select All and Bulk Actions Bar */}
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 14px',
+                    backgroundColor: 'var(--bg-surface-elevated)',
+                    borderRadius: 'var(--radius-sm)',
+                    border: '1px solid var(--border-color)',
+                    marginBottom: '12px',
+                    flexWrap: 'wrap',
+                    gap: '12px'
+                  }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: '600', color: 'var(--text-main)' }}>
+                      <input
+                        type="checkbox"
+                        checked={filteredOrders.length > 0 && selectedOrderIds.length === filteredOrders.length}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedOrderIds(filteredOrders.map(o => o.id));
+                          } else {
+                            setSelectedOrderIds([]);
+                          }
+                        }}
+                        style={{ cursor: 'pointer' }}
+                      />
+                      Select All ({filteredOrders.length})
+                    </label>
+                    
+                    {selectedOrderIds.length > 0 && (
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <button
+                          onClick={() => handleBulkUpdateOrderStatus(selectedOrderIds, 'completed')}
+                          style={{
+                            padding: '6px 12px',
+                            backgroundColor: 'var(--success)',
+                            color: '#fff',
+                            border: 'none',
+                            borderRadius: 'var(--radius-sm)',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Complete Selected ({selectedOrderIds.length})
+                        </button>
+                        <button
+                          onClick={() => handleBulkUpdateOrderStatus(selectedOrderIds, 'cancelled')}
+                          style={{
+                            padding: '6px 12px',
+                            backgroundColor: 'transparent',
+                            color: 'var(--danger)',
+                            border: '1px solid var(--danger)',
+                            borderRadius: 'var(--radius-sm)',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          Cancel Selected ({selectedOrderIds.length})
+                        </button>
                       </div>
-                      
-                      <div style={styles.orderRowDetails}>
-                        <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Created by: {o.created_by}</span>
-                        <strong style={{ color: 'var(--primary)' }}>Rs. {o.total_amount}</strong>
-                      </div>
+                    )}
+                  </div>
 
-                      <div style={styles.orderRowStatus}>
-                        <span style={{
-                          ...styles.orderBadge,
-                          backgroundColor: o.status === 'pending' ? 'rgba(245, 158, 11, 0.15)' :
-                                           o.status === 'confirmed' ? 'rgba(99, 102, 241, 0.15)' :
-                                           o.status === 'completed' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                          color: o.status === 'pending' ? 'var(--primary)' :
-                                 o.status === 'confirmed' ? 'var(--secondary)' :
-                                 o.status === 'completed' ? 'var(--success)' : 'var(--danger)',
-                        }}>
-                          {o.status.toUpperCase()}
-                        </span>
+                  <div style={styles.orderListContainer}>
+                    {filteredOrders.map((o) => (
+                      <div 
+                        key={o.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '12px',
+                          border: '1px solid var(--border-color)',
+                          borderColor: selectedOrder?.id === o.id ? 'var(--primary)' : 'var(--border-color)',
+                          backgroundColor: selectedOrder?.id === o.id ? 'var(--bg-surface-elevated)' : 'transparent',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '8px 14px',
+                          cursor: 'pointer',
+                          transition: 'var(--transition-fast)',
+                        }}
+                        onClick={() => handleViewOrder(o)}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedOrderIds.includes(o.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedOrderIds([...selectedOrderIds, o.id]);
+                            } else {
+                              setSelectedOrderIds(selectedOrderIds.filter(id => id !== o.id));
+                            }
+                          }}
+                          style={{ cursor: 'pointer' }}
+                        />
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          <div style={styles.orderRowMeta}>
+                            <strong style={{ fontSize: '15px' }}>{o.restaurant_tables?.table_number || 'N/A'}</strong>
+                            <span style={styles.orderTime}>{new Date(o.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                          </div>
+                          
+                          <div style={styles.orderRowDetails}>
+                            <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Created by: {o.created_by}</span>
+                            <strong style={{ color: 'var(--primary)' }}>Rs. {o.total_amount}</strong>
+                          </div>
+
+                          <div style={styles.orderRowStatus}>
+                            <span style={{
+                              ...styles.orderBadge,
+                              backgroundColor: o.status === 'pending' ? 'rgba(245, 158, 11, 0.15)' :
+                                               o.status === 'confirmed' ? 'rgba(99, 102, 241, 0.15)' :
+                                               o.status === 'completed' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                              color: o.status === 'pending' ? 'var(--primary)' :
+                                     o.status === 'confirmed' ? 'var(--secondary)' :
+                                     o.status === 'completed' ? 'var(--success)' : 'var(--danger)',
+                            }}>
+                              {o.status.toUpperCase()}
+                            </span>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                </>
               )}
             </div>
 
             {/* ORDER DETAILS PANEL */}
             <div style={styles.panel} className="glass">
               {selectedOrder ? (
-                <div style={styles.orderDetailsView}>
+                detailsLoading ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', height: '100%', minHeight: '300px' }}>
+                    <RefreshCw size={24} className="spin" color="var(--primary)" />
+                    <p style={{ marginTop: '12px', fontSize: '13px', color: 'var(--text-muted)' }}>Loading order details...</p>
+                  </div>
+                ) : (
+                  <div style={styles.orderDetailsView}>
                   <div style={styles.detailsHeader}>
                     <div>
                       <h2 style={{ fontFamily: 'var(--font-serif)', fontSize: '22px' }}>
@@ -1231,7 +1430,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                         {selectedOrderItems.map((item) => {
                           const currentSelectedQty = splitSelectedItems[item.id] || 0;
                           return (
-                            <div key={item.id} style={{ ...styles.itemRow, padding: '10px 0', borderBottom: '1px solid var(--border-color)' }}>
+                            <div key={item.id} style={{ ...styles.itemRow, paddingTop: '10px', paddingBottom: '10px', borderBottom: '1px solid var(--border-color)' }}>
                               <div style={{ flex: 1 }}>
                                 <strong>{item.item_name}</strong>
                                 <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
@@ -1487,8 +1686,9 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                             <button 
                               onClick={() => handleConfirmOrder(selectedOrder.id)}
                               style={{ ...styles.actionBtnLarge, backgroundColor: 'var(--primary)', color: '#fff' }}
+                              disabled={loading}
                             >
-                              Confirm Order
+                              {loading ? 'Confirming...' : 'Confirm Order'}
                             </button>
                           )}
                           
@@ -1496,8 +1696,9 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                             <button 
                               onClick={() => handleUpdateOrderStatus(selectedOrder.id, 'completed')}
                               style={{ ...styles.actionBtnLarge, backgroundColor: 'var(--success)', color: '#fff' }}
+                              disabled={loading}
                             >
-                              Mark Completed / Paid
+                              {loading ? 'Completing...' : 'Mark Completed / Paid'}
                             </button>
                           )}
                         </>
@@ -1506,6 +1707,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                       <button 
                         onClick={() => setIsEditingOrder(true)}
                         style={{ ...styles.actionBtnLarge, backgroundColor: 'var(--bg-surface-elevated)', border: '1px solid var(--border-color)', color: 'var(--text-main)' }}
+                        disabled={loading}
                       >
                         Modify Order Items
                       </button>
@@ -1514,14 +1716,15 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                         <button 
                           onClick={() => handleUpdateOrderStatus(selectedOrder.id, 'cancelled')}
                           style={{ ...styles.actionBtnLarge, backgroundColor: 'transparent', color: 'var(--danger)', border: '1px solid var(--danger)' }}
+                          disabled={loading}
                         >
-                          Cancel Order
+                          {loading ? 'Cancelling...' : 'Cancel Order'}
                         </button>
                       )}
                     </div>
                   )}
                 </div>
-              ) : (
+              ) ) : (
                 <div style={styles.emptyDetails}>
                   <Info size={36} color="var(--border-color)" style={{ marginBottom: 12 }} />
                   <p>Select an order from the queue to view details and perform actions</p>
@@ -1582,8 +1785,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                       Cancel
                     </button>
                   )}
-                  <button type="submit" style={styles.saveBtn}>
-                    {editingTableId ? 'Update Table' : 'Add Table'}
+                  <button type="submit" style={styles.saveBtn} disabled={loading}>
+                    {loading ? 'Saving...' : (editingTableId ? 'Update Table' : 'Add Table')}
                   </button>
                 </div>
               </form>
@@ -1592,7 +1795,12 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
             {/* Tables Grid */}
             <div style={styles.panel} className="glass">
               <h2 style={styles.panelTitle}>Active Tables</h2>
-              {tables.length === 0 ? (
+              {loading && tables.length === 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '48px' }}>
+                  <RefreshCw size={24} className="spin" color="var(--primary)" />
+                  <p style={{ marginTop: '12px', fontSize: '13px', color: 'var(--text-muted)' }}>Loading dining tables...</p>
+                </div>
+              ) : tables.length === 0 ? (
                 <div style={styles.emptyState}>No tables registered yet.</div>
               ) : (
                 <div style={styles.gridContainer}>
@@ -1637,8 +1845,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                     required
                     style={{ flex: 1 }}
                   />
-                  <button type="submit" style={styles.saveBtnInline}>
-                    Add Category
+                  <button type="submit" style={styles.saveBtnInline} disabled={loading}>
+                    {loading ? 'Adding...' : 'Add Category'}
                   </button>
                 </form>
               </div>
@@ -1768,8 +1976,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                         Cancel
                       </button>
                     )}
-                    <button type="submit" style={styles.saveBtn}>
-                      {editingMenuItemId ? 'Update Item' : 'Add Menu Item'}
+                    <button type="submit" style={styles.saveBtn} disabled={loading}>
+                      {loading ? 'Saving...' : (editingMenuItemId ? 'Update Item' : 'Add Menu Item')}
                     </button>
                   </div>
                 </form>
@@ -1915,8 +2123,8 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                       Cancel
                     </button>
                   )}
-                  <button type="submit" style={styles.saveBtn}>
-                    {editingStaffId ? 'Update Credentials' : 'Create Staff Member'}
+                  <button type="submit" style={styles.saveBtn} disabled={loading}>
+                    {loading ? 'Saving...' : (editingStaffId ? 'Update Credentials' : 'Create Staff Member')}
                   </button>
                 </div>
               </form>
