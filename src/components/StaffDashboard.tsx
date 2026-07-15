@@ -615,35 +615,44 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={styles.panel} className="glass">
                 <h2 style={styles.sectionHeading}>Dining Tables</h2>
-                <div style={styles.tablesGrid}>
-                  {tables.map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => handleTableSelect(t, true)}
-                      style={{
-                        ...styles.tableBtn,
-                        padding: isMobile ? '16px 12px' : '12px 6px',
-                        borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
-                        backgroundColor: t.status === 'occupied' 
-                          ? 'rgba(217, 119, 6, 0.08)' 
-                          : t.status === 'reserved' 
-                            ? 'rgba(79, 70, 229, 0.08)'
-                            : 'rgba(0, 0, 0, 0.02)',
-                        boxShadow: selectedTable?.id === t.id ? 'var(--shadow-glow)' : 'none',
-                      }}
-                    >
-                      <span style={styles.tableNum}>{t.table_number}</span>
-                      <span style={{
-                        ...styles.tableStatusText,
-                        color: t.status === 'occupied' ? 'var(--primary)' : 
-                               t.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
-                      }}>
-                        {t.status.toUpperCase()}
-                      </span>
-                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Cap: {t.seating_capacity}</span>
-                    </button>
-                  ))}
-                </div>
+                {loading && tables.length === 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '48px 24px', width: '100%', boxSizing: 'border-box' }}>
+                    <RefreshCw size={24} className="spin" color="var(--primary)" />
+                    <p style={{ marginTop: '12px', fontSize: '13px', color: 'var(--text-muted)' }}>Loading dining tables...</p>
+                  </div>
+                ) : tables.length === 0 ? (
+                  <div style={styles.emptyState}>No tables registered.</div>
+                ) : (
+                  <div style={styles.tablesGrid}>
+                    {tables.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => handleTableSelect(t, true)}
+                        style={{
+                          ...styles.tableBtn,
+                          padding: isMobile ? '16px 12px' : '12px 6px',
+                          borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
+                          backgroundColor: t.status === 'occupied' 
+                            ? 'rgba(217, 119, 6, 0.08)' 
+                            : t.status === 'reserved' 
+                              ? 'rgba(79, 70, 229, 0.08)'
+                              : 'rgba(0, 0, 0, 0.02)',
+                          boxShadow: selectedTable?.id === t.id ? 'var(--shadow-glow)' : 'none',
+                        }}
+                      >
+                        <span style={styles.tableNum}>{t.table_number}</span>
+                        <span style={{
+                          ...styles.tableStatusText,
+                          color: t.status === 'occupied' ? 'var(--primary)' : 
+                                 t.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
+                        }}>
+                          {t.status.toUpperCase()}
+                        </span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Cap: {t.seating_capacity}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {selectedTable && renderTableDetails()}
@@ -663,9 +672,26 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
                 position: 'relative'
               }}>
                 <div style={styles.menuHeader}>
-                  <div>
-                    <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
-                    <h2 style={{ ...styles.sectionHeading, marginBottom: 0 }}>Browse Menu</h2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <button
+                      onClick={handleCancelOrdering}
+                      style={{
+                        padding: '6px 10px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        backgroundColor: 'transparent',
+                        border: '1px solid var(--border-color)',
+                        color: 'var(--text-main)',
+                        borderRadius: 'var(--radius-sm)',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ← Back
+                    </button>
+                    <div>
+                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
+                      <h2 style={{ ...styles.sectionHeading, fontSize: '16px', marginBottom: 0 }}>Browse Menu</h2>
+                    </div>
                   </div>
                   <div style={{ ...styles.searchBar, width: '100%', maxWidth: '200px' }}>
                     <Search size={16} color="var(--text-muted)" style={{ marginRight: 8 }} />
@@ -1102,42 +1128,73 @@ export default function StaffDashboard({ user }: StaffDashboardProps) {
             {!isOrdering ? (
               <div style={styles.panel} className="glass">
                 <h2 style={styles.sectionHeading}>Dining Tables</h2>
-                <div style={styles.tablesGrid}>
-                  {tables.map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => handleTableSelect(t, true)}
-                      style={{
-                        ...styles.tableBtn,
-                        borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
-                        backgroundColor: t.status === 'occupied' 
-                          ? 'rgba(217, 119, 6, 0.08)' 
-                          : t.status === 'reserved' 
-                            ? 'rgba(79, 70, 229, 0.08)'
-                            : 'rgba(0, 0, 0, 0.02)',
-                        boxShadow: selectedTable?.id === t.id ? 'var(--shadow-glow)' : 'none',
-                      }}
-                    >
-                      <span style={styles.tableNum}>{t.table_number}</span>
-                      <span style={{
-                        ...styles.tableStatusText,
-                        color: t.status === 'occupied' ? 'var(--primary)' : 
-                               t.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
-                      }}>
-                        {t.status.toUpperCase()}
-                      </span>
-                      <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Cap: {t.seating_capacity}</span>
-                    </button>
-                  ))}
-                </div>
+                {loading && tables.length === 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '48px 24px', width: '100%', boxSizing: 'border-box' }}>
+                    <RefreshCw size={24} className="spin" color="var(--primary)" />
+                    <p style={{ marginTop: '12px', fontSize: '13px', color: 'var(--text-muted)' }}>Loading dining tables...</p>
+                  </div>
+                ) : tables.length === 0 ? (
+                  <div style={styles.emptyState}>No tables registered.</div>
+                ) : (
+                  <div style={styles.tablesGrid}>
+                    {tables.map((t) => (
+                      <button
+                        key={t.id}
+                        onClick={() => handleTableSelect(t, true)}
+                        style={{
+                          ...styles.tableBtn,
+                          borderColor: selectedTable?.id === t.id ? 'var(--primary)' : 'var(--border-color)',
+                          backgroundColor: t.status === 'occupied' 
+                            ? 'rgba(217, 119, 6, 0.08)' 
+                            : t.status === 'reserved' 
+                              ? 'rgba(79, 70, 229, 0.08)'
+                              : 'rgba(0, 0, 0, 0.02)',
+                          boxShadow: selectedTable?.id === t.id ? 'var(--shadow-glow)' : 'none',
+                        }}
+                      >
+                        <span style={styles.tableNum}>{t.table_number}</span>
+                        <span style={{
+                          ...styles.tableStatusText,
+                          color: t.status === 'occupied' ? 'var(--primary)' : 
+                                 t.status === 'reserved' ? 'var(--secondary)' : 'var(--success)'
+                        }}>
+                          {t.status.toUpperCase()}
+                        </span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Cap: {t.seating_capacity}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             ) : (
               selectedTable && (
                 <div className="glass" style={{ ...styles.panel, flex: 1, display: 'flex', flexDirection: 'column', gap: '16px', padding: '24px', height: '100%', minHeight: 0 }}>
                   <div style={styles.menuHeader}>
-                    <div>
-                      <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
-                      <h2 style={styles.sectionHeading}>Browse Restaurant Menu</h2>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <button 
+                        onClick={handleCancelOrdering}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '8px 14px',
+                          backgroundColor: 'var(--bg-surface-elevated)',
+                          border: '1px solid var(--border-color)',
+                          color: 'var(--text-main)',
+                          borderRadius: 'var(--radius-sm)',
+                          fontSize: '13px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s'
+                        }}
+                        className="glow-hover"
+                      >
+                        ← Back to Tables
+                      </button>
+                      <div>
+                        <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Table {selectedTable.table_number} Menu</span>
+                        <h2 style={{ ...styles.sectionHeading, marginBottom: 0 }}>Browse Restaurant Menu</h2>
+                      </div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <button

@@ -1232,6 +1232,7 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                       <div style={{ display: 'flex', gap: '8px' }}>
                         <button
                           onClick={() => handleBulkUpdateOrderStatus(selectedOrderIds, 'completed')}
+                          disabled={loading}
                           style={{
                             padding: '6px 12px',
                             backgroundColor: 'var(--success)',
@@ -1240,13 +1241,15 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                             borderRadius: 'var(--radius-sm)',
                             fontSize: '12px',
                             fontWeight: '600',
-                            cursor: 'pointer'
+                            cursor: 'pointer',
+                            opacity: loading ? 0.7 : 1
                           }}
                         >
-                          Complete Selected ({selectedOrderIds.length})
+                          {loading ? 'Completing...' : `Complete Selected (${selectedOrderIds.length})`}
                         </button>
                         <button
                           onClick={() => handleBulkUpdateOrderStatus(selectedOrderIds, 'cancelled')}
+                          disabled={loading}
                           style={{
                             padding: '6px 12px',
                             backgroundColor: 'transparent',
@@ -1255,10 +1258,11 @@ export default function AdminDashboard({ user }: AdminDashboardProps) {
                             borderRadius: 'var(--radius-sm)',
                             fontSize: '12px',
                             fontWeight: '600',
-                            cursor: 'pointer'
+                            cursor: 'pointer',
+                            opacity: loading ? 0.7 : 1
                           }}
                         >
-                          Cancel Selected ({selectedOrderIds.length})
+                          {loading ? 'Cancelling...' : `Cancel Selected (${selectedOrderIds.length})`}
                         </button>
                       </div>
                     )}
